@@ -1,4 +1,8 @@
 import streamlit as st
+import sqlite3
+import json
+from pathlib import Path
+from datetime import datetime
 
 from engine.damage_models import (
     DamageContext,
@@ -7,13 +11,132 @@ from engine.damage_models import (
     build_plain_text_summary,
 )
 
+# --------- DB setup ---------
 
+DB_PATH = Path("dent_assessments.db")
+
+
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dent_assessments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            aircraft_type TEXT,
+            structure_zone TEXT,
+            area_pressurized INTEGER,
+            srm_reference TEXT,
+            side TEXT,
+            station REAL,
+            waterline REAL,
+            stringer TEXT,
+            depth_mm REAL,
+            length_mm REAL,
+            width_mm REAL,
+            distance_to_frame_mm REAL,
+            distance_to_stringer_mm REAL,
+            skin_thickness_mm REAL,
+            within_limits INTEGER,
+            summary TEXT,
+            raw_input_json TEXT
+        )
+        """
+    )
+    conn.commit()
+
+
+def log_assessment(dent: DentDamage, within_limits: bool, summary: str, raw_input: dict):
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO dent_assessments (
+            created_at,
+            aircraft_type,
+            structure_zone,
+            area_pressurized,
+            srm_reference,
+            side,
+            station,
+            waterline,
+            stringer,
+            depth_mm,
+            length_mm,
+            width_mm,
+            distance_to_frame_mm,
+            distance_to_stringer_mm,
+            skin_thickness_mm,
+            within_limits,
+            summary,
+            raw_input_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            dent.context.aircraft_type,
+            dent.context.structure_zone,
+            1 if dent.context.area_pressurized else 0,
+            dent.context.srm_reference,
+            dent.side,
+            dent.station,
+            dent.waterline,
+            dent.stringer,
+            dent.depth_mm,
+            dent.length_mm,
+            dent.width_mm,
+            dent.distance_to_nearest_frame_mm,
+            dent.distance_to_nearest_stringer_mm,
+            dent.skin_thickness_mm,
+            1 if within_limits else 0,
+            summary,
+            json.dumps(raw_input),
+        ),
+    )
+    conn.commit()
+
+
+def load_recent_assessments(limit: int = 20):
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        SELECT
+            created_at,
+            aircraft_type,
+            structure_zone,
+            side,
+            station,
+            depth_mm,
+            length_mm,
+            width_mm,
+            distance_to_frame_mm,
+            distance_to_stringer_mm,
+            skin_thickness_mm,
+            within_limits
+        FROM dent_assessments
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    return cur.fetchall()
+
+
+# Initialize DB once
+init_db()
+
+# --------- Streamlit app ---------
 
 st.set_page_config(
     page_title="Fuselage Dent Checker (Prototype)",
     layout="centered",
 )
-
 
 st.title("Fuselage Dent Checker (Prototype)")
 st.caption(
@@ -49,7 +172,9 @@ with st.form("dent_input_form"):
     depth_mm = st.number_input("Dent depth (mm)", min_value=0.0, value=2.5, step=0.1)
     length_mm = st.number_input("Dent length (mm)", min_value=0.0, value=30.0, step=1.0)
     width_mm = st.number_input("Dent width (mm)", min_value=0.0, value=30.0, step=1.0)
-    skin_thickness_mm = st.number_input("Skin thickness at dent (mm)", min_value=0.0, value=2.2, step=0.1)
+    skin_thickness_mm = st.number_input(
+        "Skin thickness at dent (mm)", min_value=0.0, value=2.2, step=0.1
+    )
 
     st.markdown("---")
     st.subheader("Distances to structure")
@@ -59,7 +184,7 @@ with st.form("dent_input_form"):
         min_value=0.0,
         value=120.0,
         step=5.0,
-        help="Measured along the skin from the dent centre to the closest frame."
+        help="Measured along the skin from the dent centre to the closest frame.",
     )
 
     dist_stringer_mm = st.number_input(
@@ -67,7 +192,7 @@ with st.form("dent_input_form"):
         min_value=0.0,
         value=80.0,
         step=5.0,
-        help="Measured along the skin from the dent centre to the closest stringer."
+        help="Measured along the skin from the dent centre to the closest stringer.",
     )
 
     st.markdown("---")
@@ -108,6 +233,9 @@ if submitted:
     result = assess_dent(dent)
     summary_text = build_plain_text_summary(result)
 
+    # Log to SQLite
+    log_assessment(dent, result.within_limits, summary_text, result.raw_input)
+
     # --------- Display results ---------
 
     st.markdown("---")
@@ -134,3 +262,19 @@ if submitted:
         "You must verify all assessments against the latest SRM revision and "
         "your organization's approved procedures."
     )
+
+# --------- History section ---------
+
+st.markdown("---")
+st.subheader("Previous assessments (this environment)")
+
+rows = load_recent_assessments(limit=20)
+if rows:
+    records = []
+    for r in rows:
+        d = dict(r)
+        d["within_limits"] = "YES" if d["within_limits"] == 1 else "NO"
+        records.append(d)
+    st.table(records)
+else:
+    st.info("No assessments logged yet in this environment.")

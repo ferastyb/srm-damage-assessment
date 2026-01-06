@@ -6,9 +6,9 @@ from typing import List, Optional, Literal
 
 @dataclass
 class DamageContext:
-    \"""
+    """
     General context for the damage.
-    \"""
+    """
     aircraft_type: str              # e.g. "B787-8"
     structure_zone: str             # e.g. "fuselage", "wing"
     area_pressurized: bool          # True if in pressurized fuselage
@@ -17,9 +17,9 @@ class DamageContext:
 
 @dataclass
 class DentDamage:
-    \"""
+    """
     Normalized input for a single dent.
-    \"""
+    """
     context: DamageContext
 
     side: Literal["LH", "RH"]
@@ -41,10 +41,10 @@ class DentDamage:
 
 @dataclass
 class DentLimits:
-    \"""
+    """
     Numeric limits for a given dent scenario.
     All units are mm-based except depth ratio.
-    \"""
+    """
     name: str                               # e.g. "pressurized_fuselage_dent"
     max_depth_ratio: float                  # depth / thickness limit (e.g. 0.05 = 5% t)
     max_diameter_mm: float                  # max dent diameter
@@ -54,9 +54,9 @@ class DentLimits:
 
 @dataclass
 class CheckResult:
-    \"""
+    """
     Result for an individual check (depth, diameter, distances, etc).
-    \"""
+    """
     name: str
     passed: bool
     message: str
@@ -64,9 +64,9 @@ class CheckResult:
 
 @dataclass
 class AssessmentResult:
-    \"""
+    """
     Overall result of the dent assessment.
-    \"""
+    """
     within_limits: bool
     checks: List[CheckResult]
     context: DamageContext
@@ -95,11 +95,11 @@ UNPRESSURIZED_FUSELAGE_DENT_LIMITS = DentLimits(
 
 
 def get_dent_limits_for_context(context: DamageContext) -> DentLimits:
-    \"""
+    """
     Select a DentLimits set based on the context.
     For v1 we only differentiate pressurized vs unpressurized fuselage.
     Expand this as you add more structures and scenarios.
-    \"""
+    """
     zone = context.structure_zone.lower()
 
     if zone == "fuselage":
@@ -116,10 +116,10 @@ def get_dent_limits_for_context(context: DamageContext) -> DentLimits:
 # --------- Rule engine for dent assessment ---------
 
 def assess_dent(dent: DentDamage, limits: Optional[DentLimits] = None) -> AssessmentResult:
-    \"""
+    """
     Apply SRM-style numeric rules to a dent and return a structured result.
     `limits` can be passed explicitly or auto-selected from context.
-    \"""
+    """
     if limits is None:
         limits = get_dent_limits_for_context(dent.context)
 
@@ -250,11 +250,11 @@ def assess_dent(dent: DentDamage, limits: Optional[DentLimits] = None) -> Assess
 # --------- Simple deterministic explanation (placeholder for LLM) ---------
 
 def build_plain_text_summary(result: AssessmentResult) -> str:
-    \"""
+    """
     Build a simple text summary from an AssessmentResult.
     This is a deterministic placeholder; you can later replace or augment
     this with an LLM-generated explanation.
-    \"""
+    """
     ctx = result.context
     status = "WITHIN" if result.within_limits else "OUTSIDE"
 
@@ -291,7 +291,9 @@ def build_plain_text_summary(result: AssessmentResult) -> str:
         )
 
     lines.append("")
-    lines.append("NOTE: This assessment is advisory only and must be verified "
-                 "against the latest applicable SRM and company procedures.")
+    lines.append(
+        "NOTE: This assessment is advisory only and must be verified "
+        "against the latest applicable SRM and company procedures."
+    )
 
     return "\n".join(lines)

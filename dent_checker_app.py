@@ -1,8 +1,10 @@
-import streamlit as st
-import sqlite3
+import re
 import json
+import sqlite3
 from pathlib import Path
 from datetime import datetime
+
+import streamlit as st
 
 from engine.damage_models import (
     DamageContext,
@@ -128,10 +130,98 @@ def load_recent_assessments(limit: int = 20):
     return cur.fetchall()
 
 
-# Initialize DB once
-init_db()
+# --------- Simple parser for free-text damage description ---------
 
-# --------- Streamlit app ---------
+def parse_damage_description(text: str) -> dict:
+    """
+    Very simple, deterministic parser for descriptions like:
+    "B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack."
+    Returns a dict of fields to inject into session_state.
+    """
+    parsed = {
+        "aircraft_type": "B787-8",
+        "structure_zone": "fuselage",
+        "area_pressurized": True,
+        "srm_reference": st.session_state.get("srm_reference", ""),
+        "side": st.session_state.get("side", "LH"),
+        "station": st.session_state.get("station", 1280.0),
+        "waterline": st.session_state.get("waterline", 210.0),
+        "stringer": st.session_state.get("stringer", "S-10L"),
+        "depth_mm": st.session_state.get("depth_mm", 2.5),
+        "length_mm": st.session_state.get("length_mm", 30.0),
+        "width_mm": st.session_state.get("width_mm", 30.0),
+        "skin_thickness_mm": st.session_state.get("skin_thickness_mm", 2.2),
+        "dist_frame_mm": st.session_state.get("dist_frame_mm", 120.0),
+        "dist_stringer_mm": st.session_state.get("dist_stringer_mm", 80.0),
+        "notes": st.session_state.get("notes", ""),
+    }
+
+    if not text:
+        return parsed
+
+    lower = text.lower()
+
+    # Aircraft type (e.g. B787, B787-8, B767-300)
+    m = re.search(r"\b(b[0-9]{3,4}(?:-[0-9a-z]+)?)\b", text, re.IGNORECASE)
+    if m:
+        parsed["aircraft_type"] = m.group(1).upper()
+
+    # Structure zone
+    if "fuselage" in lower:
+        parsed["structure_zone"] = "fuselage"
+    elif "wing" in lower:
+        parsed["structure_zone"] = "wing"
+    elif "tail" in lower or "empennage" in lower:
+        parsed["structure_zone"] = "tail"
+
+    # Side (LH / RH)
+    m = re.search(r"\b(LH|RH)\b", text, re.IGNORECASE)
+    if m:
+        parsed["side"] = m.group(1).upper()
+
+    # Station (STA 1280 etc.)
+    m = re.search(r"\bSTA\s*([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+    if m:
+        try:
+            parsed["station"] = float(m.group(1))
+        except ValueError:
+            pass
+
+    # Stringer (S-10L, S10L, STR 10L etc.)
+    m = re.search(r"\bS[-\s]?([0-9]+[LR]?)\b", text, re.IGNORECASE)
+    if m:
+        parsed["stringer"] = f"S-{m.group(1).upper()}"
+
+    # Dent diameter (e.g. 25mm dia, 25 mm diameter)
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mm\s*(dia|diameter)", lower)
+    if m:
+        try:
+            val = float(m.group(1))
+            parsed["length_mm"] = val
+            parsed["width_mm"] = val
+        except ValueError:
+            pass
+
+    # Dent depth (e.g. 3mm depth, 3 mm deep)
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mm\s*(depth|deep)", lower)
+    if m:
+        try:
+            parsed["depth_mm"] = float(m.group(1))
+        except ValueError:
+            pass
+
+    # No visible crack / cracking
+    if "no visible crack" in lower or "no cracks" in lower:
+        if parsed["notes"]:
+            parsed["notes"] += " "
+        parsed["notes"] += "No visible cracking."
+
+    return parsed
+
+
+# --------- Streamlit app setup ---------
+
+init_db()
 
 st.set_page_config(
     page_title="Fuselage Dent Checker (Prototype)",
@@ -144,90 +234,175 @@ st.caption(
     "Advisory only – always verify against the current SRM and company procedures."
 )
 
-# --------- Input form ---------
+# --------- Initialize session_state defaults ---------
+
+defaults = {
+    "aircraft_type": "B787-8",
+    "structure_zone": "fuselage",
+    "area_pressurized": True,
+    "srm_reference": "SRM 53-10-XX Fig. 201 (example)",
+    "side": "LH",
+    "station": 1280.0,
+    "waterline": 210.0,
+    "stringer": "S-10L",
+    "depth_mm": 2.5,
+    "length_mm": 30.0,
+    "width_mm": 30.0,
+    "skin_thickness_mm": 2.2,
+    "dist_frame_mm": 120.0,
+    "dist_stringer_mm": 80.0,
+    "notes": "No visible cracking. No wrinkles at fastener heads.",
+    "damage_desc": "",
+}
+
+for k, v in defaults.items():
+    st.session_state.setdefault(k, v)
+
+# --------- Free-text damage description ---------
+
+st.subheader("Damage description (quick entry for AOG)")
+
+st.text_area(
+    "Enter or paste damage description",
+    key="damage_desc",
+    placeholder='e.g. "B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack."',
+)
+
+if st.button("Parse description into fields"):
+    parsed = parse_damage_description(st.session_state["damage_desc"])
+    for key, value in parsed.items():
+        st.session_state[key] = value
+    st.success("Description parsed into fields below. Please review before running assessment.")
+
+st.markdown("---")
+
+# --------- Structured input form ---------
 
 with st.form("dent_input_form"):
 
     st.subheader("Context")
 
-    aircraft_type = st.text_input("Aircraft type", value="B787-8")
-    structure_zone = st.text_input("Structure zone", value="fuselage")
-    area_pressurized = st.checkbox("Pressurized area", value=True)
-    srm_reference = st.text_input(
-        "SRM reference (optional)",
-        value="SRM 53-10-XX Fig. 201 (example)",
+    st.session_state["aircraft_type"] = st.text_input(
+        "Aircraft type", key="aircraft_type"
+    )
+
+    st.session_state["structure_zone"] = st.text_input(
+        "Structure zone", key="structure_zone"
+    )
+
+    st.session_state["area_pressurized"] = st.checkbox(
+        "Pressurized area", key="area_pressurized"
+    )
+
+    st.session_state["srm_reference"] = st.text_input(
+        "SRM reference (optional)", key="srm_reference"
     )
 
     st.markdown("---")
     st.subheader("Location (optional but useful)")
 
-    side = st.selectbox("Side", options=["LH", "RH"], index=0)
-    station = st.number_input("Station (STA)", value=1280.0, step=10.0)
-    waterline = st.number_input("Waterline (WL)", value=210.0, step=5.0)
-    stringer = st.text_input("Stringer", value="S-10L")
+    st.session_state["side"] = st.selectbox("Side", options=["LH", "RH"], key="side")
+
+    st.session_state["station"] = st.number_input(
+        "Station (STA)", value=st.session_state["station"], step=10.0, key="station"
+    )
+
+    st.session_state["waterline"] = st.number_input(
+        "Waterline (WL)", value=st.session_state["waterline"], step=5.0, key="waterline"
+    )
+
+    st.session_state["stringer"] = st.text_input(
+        "Stringer", key="stringer"
+    )
 
     st.markdown("---")
     st.subheader("Dent dimensions")
 
-    depth_mm = st.number_input("Dent depth (mm)", min_value=0.0, value=2.5, step=0.1)
-    length_mm = st.number_input("Dent length (mm)", min_value=0.0, value=30.0, step=1.0)
-    width_mm = st.number_input("Dent width (mm)", min_value=0.0, value=30.0, step=1.0)
-    skin_thickness_mm = st.number_input(
-        "Skin thickness at dent (mm)", min_value=0.0, value=2.2, step=0.1
+    st.session_state["depth_mm"] = st.number_input(
+        "Dent depth (mm)",
+        min_value=0.0,
+        value=st.session_state["depth_mm"],
+        step=0.1,
+        key="depth_mm",
+    )
+
+    st.session_state["length_mm"] = st.number_input(
+        "Dent length (mm)",
+        min_value=0.0,
+        value=st.session_state["length_mm"],
+        step=1.0,
+        key="length_mm",
+    )
+
+    st.session_state["width_mm"] = st.number_input(
+        "Dent width (mm)",
+        min_value=0.0,
+        value=st.session_state["width_mm"],
+        step=1.0,
+        key="width_mm",
+    )
+
+    st.session_state["skin_thickness_mm"] = st.number_input(
+        "Skin thickness at dent (mm)",
+        min_value=0.0,
+        value=st.session_state["skin_thickness_mm"],
+        step=0.1,
+        key="skin_thickness_mm",
     )
 
     st.markdown("---")
     st.subheader("Distances to structure")
 
-    dist_frame_mm = st.number_input(
+    st.session_state["dist_frame_mm"] = st.number_input(
         "Distance to nearest frame (mm)",
         min_value=0.0,
-        value=120.0,
+        value=st.session_state["dist_frame_mm"],
         step=5.0,
+        key="dist_frame_mm",
         help="Measured along the skin from the dent centre to the closest frame.",
     )
 
-    dist_stringer_mm = st.number_input(
+    st.session_state["dist_stringer_mm"] = st.number_input(
         "Distance to nearest stringer (mm)",
         min_value=0.0,
-        value=80.0,
+        value=st.session_state["dist_stringer_mm"],
         step=5.0,
+        key="dist_stringer_mm",
         help="Measured along the skin from the dent centre to the closest stringer.",
     )
 
     st.markdown("---")
-    notes = st.text_area(
+    st.session_state["notes"] = st.text_area(
         "Notes / observations",
-        value="No visible cracking. No wrinkles at fastener heads.",
+        key="notes",
         height=80,
     )
 
     submitted = st.form_submit_button("Run assessment")
 
-
 # --------- Run the rule engine ---------
 
 if submitted:
     ctx = DamageContext(
-        aircraft_type=aircraft_type,
-        structure_zone=structure_zone,
-        area_pressurized=area_pressurized,
-        srm_reference=srm_reference.strip() or None,
+        aircraft_type=st.session_state["aircraft_type"],
+        structure_zone=st.session_state["structure_zone"],
+        area_pressurized=st.session_state["area_pressurized"],
+        srm_reference=st.session_state["srm_reference"].strip() or None,
     )
 
     dent = DentDamage(
         context=ctx,
-        side=side,
-        station=station,
-        waterline=waterline,
-        stringer=stringer.strip() or None,
-        depth_mm=depth_mm,
-        length_mm=length_mm,
-        width_mm=width_mm,
-        distance_to_nearest_frame_mm=dist_frame_mm,
-        distance_to_nearest_stringer_mm=dist_stringer_mm,
-        skin_thickness_mm=skin_thickness_mm,
-        notes=notes.strip(),
+        side=st.session_state["side"],
+        station=st.session_state["station"],
+        waterline=st.session_state["waterline"],
+        stringer=st.session_state["stringer"].strip() or None,
+        depth_mm=st.session_state["depth_mm"],
+        length_mm=st.session_state["length_mm"],
+        width_mm=st.session_state["width_mm"],
+        distance_to_nearest_frame_mm=st.session_state["dist_frame_mm"],
+        distance_to_nearest_stringer_mm=st.session_state["dist_stringer_mm"],
+        skin_thickness_mm=st.session_state["skin_thickness_mm"],
+        notes=st.session_state["notes"].strip(),
     )
 
     result = assess_dent(dent)

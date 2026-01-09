@@ -102,6 +102,14 @@
     }
 
     /* Page shell */
+    body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.82);
+  z-index: -1;
+}
+
     .shell {
       max-width: 1200px;
       margin: 0 auto;

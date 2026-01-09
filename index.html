@@ -5,13 +5,13 @@
   <title>SRM Damage Assessment Tool • Feras Aviation</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- Favicon -->
-  <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+  <!-- Favicon (use relative path for GitHub Pages project sites) -->
+  <link rel="icon" href="assets/favicon.ico" type="image/x-icon" />
 
   <style>
     * { box-sizing: border-box; }
 
-    :root {
+    :root{
       --header-h: 64px;
       --bg: #f5f5f5;
       --card: #ffffff;
@@ -20,14 +20,11 @@
       --border: #e5e7eb;
       --nav: #111827;
       --navText: #f9fafb;
-      --link: #2563eb;
       --shadow: 0 6px 18px rgba(0,0,0,0.08);
       --radius: 14px;
     }
 
-    html, body {
-      height: 100%;
-    }
+    html, body { height: 100%; }
 
     body {
       margin: 0;
@@ -36,7 +33,6 @@
       color: var(--text);
     }
 
-    /* Header */
     header {
       height: var(--header-h);
       padding: 0 1.25rem;
@@ -58,6 +54,7 @@
       min-width: 0;
     }
 
+    /* Logo fix: relative URL in HTML + robust sizing here */
     .brand img {
       height: 34px;
       width: auto;
@@ -67,7 +64,7 @@
     .divider {
       width: 1px;
       height: 28px;
-      background: rgba(255, 255, 255, 0.28);
+      background: rgba(255,255,255,0.28);
       flex: 0 0 auto;
     }
 
@@ -81,54 +78,12 @@
       text-overflow: ellipsis;
     }
 
-    .right {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      flex: 0 0 auto;
-    }
-
     .meta {
       font-size: 0.85rem;
       opacity: 0.8;
       white-space: nowrap;
     }
 
-    .btn {
-      appearance: none;
-      border: 1px solid rgba(255,255,255,0.22);
-      background: rgba(255,255,255,0.08);
-      color: var(--navText);
-      padding: 0.48rem 0.7rem;
-      border-radius: 10px;
-      font-size: 0.85rem;
-      cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease;
-      user-select: none;
-    }
-
-    .btn:hover {
-      background: rgba(255,255,255,0.12);
-      border-color: rgba(255,255,255,0.30);
-    }
-
-    .btn:active {
-      transform: translateY(1px);
-    }
-
-    .btn svg {
-      width: 16px;
-      height: 16px;
-      display: block;
-      fill: currentColor;
-      opacity: 0.95;
-    }
-
-    /* Layout */
     .shell {
       max-width: 1200px;
       margin: 0 auto;
@@ -141,10 +96,6 @@
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       padding: 0.9rem 1rem;
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 1rem;
       margin-bottom: 0.9rem;
     }
 
@@ -161,27 +112,6 @@
       line-height: 1.35;
     }
 
-    .notice .actions {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      margin-top: 0.05rem;
-    }
-
-    .notice .actions a {
-      color: var(--link);
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 0.9rem;
-      white-space: nowrap;
-    }
-
-    .notice .actions a:hover {
-      text-decoration: underline;
-    }
-
-    /* App frame */
     .frame-wrap {
       background: var(--card);
       border: 1px solid var(--border);
@@ -252,9 +182,7 @@
       border-color: #d1d5db;
     }
 
-    .toolbtn:active {
-      transform: translateY(1px);
-    }
+    .toolbtn:active { transform: translateY(1px); }
 
     .toolbtn svg {
       width: 16px;
@@ -266,14 +194,13 @@
 
     iframe {
       width: 100%;
-      height: calc(100vh - var(--header-h) - 220px); /* responsive-ish */
-      min-height: 720px; /* ensures usable on big screens */
+      height: calc(100vh - var(--header-h) - 220px);
+      min-height: 720px;
       border: none;
       background: white;
       display: block;
     }
 
-    /* Footer */
     footer {
       max-width: 1200px;
       margin: 0 auto;
@@ -291,16 +218,8 @@
       flex-wrap: wrap;
     }
 
-    footer a {
-      color: var(--link);
-      text-decoration: none;
-      font-weight: 600;
-    }
-
-    footer a:hover { text-decoration: underline; }
-
     .version {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
       font-size: 0.82rem;
       background: rgba(17,24,39,0.06);
       color: rgba(17,24,39,0.85);
@@ -310,48 +229,14 @@
       white-space: nowrap;
     }
 
-    /* Mobile tweaks */
     @media (max-width: 720px) {
-      header {
-        padding: 0 0.85rem;
-      }
-
-      .divider {
-        display: none;
-      }
-
-      header h1 {
-        font-size: 0.98rem;
-      }
-
-      .meta {
-        display: none; /* reduce clutter on mobile */
-      }
-
-      iframe {
-        height: calc(100vh - var(--header-h) - 250px);
-        min-height: 640px;
-      }
-
-      .notice {
-        flex-direction: column;
-      }
-
-      .notice .actions {
-        width: 100%;
-        justify-content: flex-start;
-      }
-
-      .frame-topbar {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-
-      .frame-topbar .tools {
-        width: 100%;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
+      header { padding: 0 0.85rem; }
+      .divider { display: none; }
+      header h1 { font-size: 0.98rem; }
+      .meta { display: none; }
+      iframe { min-height: 640px; }
+      .frame-topbar { flex-direction: column; align-items: flex-start; }
+      .frame-topbar .tools { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
     }
   </style>
 </head>
@@ -359,36 +244,22 @@
 <body>
   <header>
     <div class="brand">
-      <img src="/assets/FA_logo.png" alt="Feras Aviation" />
+      <!-- IMPORTANT: relative path so it works on Pages -->
+      <img src="assets/FA_logo.png" alt="Feras Aviation" />
       <span class="divider"></span>
       <h1>SRM Damage Assessment Tool</h1>
     </div>
 
-    <div class="right">
-      <span class="meta">Prototype • Advisory use only</span>
-      <a class="btn" href="https://srm-damage-assessment.streamlit.app/?embed=true" target="_blank" rel="noopener">
-        <!-- external-link icon -->
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z"></path>
-          <path d="M5 5h7v2H7v10h10v-5h2v7H5V5z"></path>
-        </svg>
-        Open in new tab
-      </a>
-    </div>
+    <span class="meta">Prototype • Advisory use only</span>
   </header>
 
   <div class="shell">
     <div class="notice" role="note" aria-label="Advisory notice">
-      <div>
-        <strong>Advisory tool — verify against the current SRM and operator procedures.</strong>
-        <p>
-          Outputs are generated from prototype rules and user-provided inputs.
-          Always confirm applicability, limits, and repair actions using the latest approved documentation.
-        </p>
-      </div>
-      <div class="actions">
-        <a href="https://srm-damage-assessment.streamlit.app/" target="_blank" rel="noopener">Open Streamlit directly</a>
-      </div>
+      <strong>Advisory tool — verify against the current SRM and operator procedures.</strong>
+      <p>
+        Outputs are generated from prototype rules and user-provided inputs.
+        Always confirm applicability, limits, and repair actions using the latest approved documentation.
+      </p>
     </div>
 
     <div class="frame-wrap">
@@ -412,17 +283,9 @@
             </svg>
             Reload
           </button>
-
-          <a class="toolbtn" href="https://www.ferasaviation.info/" target="_blank" rel="noopener" title="Back to Feras Aviation">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 3l9 8h-3v10h-5v-6H11v6H6V11H3l9-8z"></path>
-            </svg>
-            FerasAviation.info
-          </a>
         </div>
       </div>
 
-      <!-- Streamlit embed -->
       <iframe
         id="srmFrame"
         src="https://srm-damage-assessment.streamlit.app/?embed=true"
@@ -432,10 +295,7 @@
 
       <noscript>
         <div style="padding: 1rem; border-top: 1px solid var(--border); background: #fff;">
-          JavaScript is required for some site controls (fullscreen/reload). You can still use the tool directly:
-          <a href="https://srm-damage-assessment.streamlit.app/" target="_blank" rel="noopener" style="color: var(--link); font-weight: 600;">
-            Open SRM Damage Assessment Tool
-          </a>.
+          JavaScript is required for some site controls (fullscreen/reload).
         </div>
       </noscript>
     </div>
@@ -443,13 +303,8 @@
 
   <footer>
     <div class="row">
-      <div>
-        © <span id="year"></span> Feras Aviation •
-        <a href="https://www.ferasaviation.info/" target="_blank" rel="noopener">www.ferasaviation.info</a>
-      </div>
-      <div class="version" title="Site wrapper version">
-        v0.1 • embed wrapper
-      </div>
+      <div>© <span id="year"></span> Feras Aviation</div>
+      <div class="version" title="Site wrapper version">v0.1 • embed wrapper</div>
     </div>
     <div style="margin-top: 0.5rem;">
       This tool is provided for informational support only. It does not replace approved engineering data or regulatory requirements.
@@ -457,10 +312,8 @@
   </footer>
 
   <script>
-    // Footer year
     document.getElementById("year").textContent = new Date().getFullYear();
 
-    // Fullscreen (attempts fullscreen for the iframe element)
     const frame = document.getElementById("srmFrame");
     const btnFullscreen = document.getElementById("btnFullscreen");
     const btnReload = document.getElementById("btnReload");
@@ -471,25 +324,19 @@
           await document.exitFullscreen();
           return;
         }
-        // Request fullscreen on the iframe itself
         if (frame.requestFullscreen) {
           await frame.requestFullscreen();
         } else if (frame.webkitRequestFullscreen) {
-          frame.webkitRequestFullscreen(); // Safari
-        } else if (frame.msRequestFullscreen) {
-          frame.msRequestFullscreen(); // IE/Edge legacy
+          frame.webkitRequestFullscreen();
         } else {
           alert("Fullscreen is not supported by this browser.");
         }
       } catch (e) {
-        // Some browsers block fullscreen for cross-origin iframes.
-        alert("Fullscreen may be blocked for embedded content. Use 'Open in new tab' instead.");
+        alert("Fullscreen may be blocked for embedded content.");
       }
     });
 
-    // Reload iframe
     btnReload.addEventListener("click", () => {
-      // bust cache without changing origin
       const url = new URL(frame.src);
       url.searchParams.set("_ts", Date.now());
       frame.src = url.toString();

@@ -2,104 +2,498 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>SRM Damage Assessment Tool</title>
+  <title>SRM Damage Assessment Tool • Feras Aviation</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
+  <!-- Favicon -->
+  <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+
   <style>
-    * {
-      box-sizing: border-box;
+    * { box-sizing: border-box; }
+
+    :root {
+      --header-h: 64px;
+      --bg: #f5f5f5;
+      --card: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --nav: #111827;
+      --navText: #f9fafb;
+      --link: #2563eb;
+      --shadow: 0 6px 18px rgba(0,0,0,0.08);
+      --radius: 14px;
+    }
+
+    html, body {
+      height: 100%;
     }
 
     body {
       margin: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f5f5f5;
-      color: #111827;
+      background: var(--bg);
+      color: var(--text);
     }
 
+    /* Header */
     header {
-      height: 64px;
-      padding: 0 2rem;
-      background: #111827;
-      color: #f9fafb;
+      height: var(--header-h);
+      padding: 0 1.25rem;
+      background: var(--nav);
+      color: var(--navText);
       display: flex;
       align-items: center;
       justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.9rem;
+      min-width: 0;
+    }
+
+    .brand img {
+      height: 34px;
+      width: auto;
+      display: block;
+    }
+
+    .divider {
+      width: 1px;
+      height: 28px;
+      background: rgba(255, 255, 255, 0.28);
+      flex: 0 0 auto;
     }
 
     header h1 {
       margin: 0;
-      font-size: 1.25rem;
-      font-weight: 600;
+      font-size: 1.05rem;
+      font-weight: 650;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    header span {
+    .right {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex: 0 0 auto;
+    }
+
+    .meta {
       font-size: 0.85rem;
       opacity: 0.8;
+      white-space: nowrap;
     }
 
-    main {
-      height: calc(100vh - 64px);
-      width: 100%;
+    .btn {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.22);
+      background: rgba(255,255,255,0.08);
+      color: var(--navText);
+      padding: 0.48rem 0.7rem;
+      border-radius: 10px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease;
+      user-select: none;
+    }
+
+    .btn:hover {
+      background: rgba(255,255,255,0.12);
+      border-color: rgba(255,255,255,0.30);
+    }
+
+    .btn:active {
+      transform: translateY(1px);
+    }
+
+    .btn svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+      fill: currentColor;
+      opacity: 0.95;
+    }
+
+    /* Layout */
+    .shell {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 1rem 1rem 0.75rem;
+    }
+
+    .notice {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 0.9rem 1rem;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 0.9rem;
+    }
+
+    .notice strong {
+      display: block;
+      font-size: 0.95rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .notice p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.35;
+    }
+
+    .notice .actions {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.05rem;
+    }
+
+    .notice .actions a {
+      color: var(--link);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    .notice .actions a:hover {
+      text-decoration: underline;
+    }
+
+    /* App frame */
+    .frame-wrap {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .frame-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.75rem 0.9rem;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(to bottom, #ffffff, #fbfbfb);
+    }
+
+    .frame-topbar .left {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      min-width: 0;
+    }
+
+    .frame-topbar .title {
+      font-weight: 650;
+      font-size: 0.95rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .frame-topbar .sub {
+      color: var(--muted);
+      font-size: 0.85rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .frame-topbar .tools {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex: 0 0 auto;
+    }
+
+    .toolbtn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      color: var(--text);
+      padding: 0.45rem 0.65rem;
+      border-radius: 10px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease;
+      user-select: none;
+    }
+
+    .toolbtn:hover {
+      background: #f9fafb;
+      border-color: #d1d5db;
+    }
+
+    .toolbtn:active {
+      transform: translateY(1px);
+    }
+
+    .toolbtn svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+      fill: currentColor;
+      opacity: 0.85;
     }
 
     iframe {
       width: 100%;
-      height: 100%;
+      height: calc(100vh - var(--header-h) - 220px); /* responsive-ish */
+      min-height: 720px; /* ensures usable on big screens */
       border: none;
       background: white;
+      display: block;
     }
 
-    .fallback {
-      padding: 1rem 2rem;
-      font-size: 0.9rem;
-      background: #fff;
-      border-top: 1px solid #e5e7eb;
+    /* Footer */
+    footer {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0.75rem 1rem 1.25rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      line-height: 1.35;
     }
 
-    .fallback a {
-      color: #2563eb;
+    footer .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    footer a {
+      color: var(--link);
       text-decoration: none;
-      font-weight: 500;
+      font-weight: 600;
     }
 
-    .fallback a:hover {
-      text-decoration: underline;
+    footer a:hover { text-decoration: underline; }
+
+    .version {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.82rem;
+      background: rgba(17,24,39,0.06);
+      color: rgba(17,24,39,0.85);
+      border: 1px solid rgba(17,24,39,0.08);
+      padding: 0.18rem 0.45rem;
+      border-radius: 8px;
+      white-space: nowrap;
+    }
+
+    /* Mobile tweaks */
+    @media (max-width: 720px) {
+      header {
+        padding: 0 0.85rem;
+      }
+
+      .divider {
+        display: none;
+      }
+
+      header h1 {
+        font-size: 0.98rem;
+      }
+
+      .meta {
+        display: none; /* reduce clutter on mobile */
+      }
+
+      iframe {
+        height: calc(100vh - var(--header-h) - 250px);
+        min-height: 640px;
+      }
+
+      .notice {
+        flex-direction: column;
+      }
+
+      .notice .actions {
+        width: 100%;
+        justify-content: flex-start;
+      }
+
+      .frame-topbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .frame-topbar .tools {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
     }
   </style>
 </head>
 
 <body>
-
   <header>
-    <h1>SRM Damage Assessment Tool</h1>
-    <span>Prototype • Advisory use only</span>
+    <div class="brand">
+      <img src="/assets/FA_logo.png" alt="Feras Aviation" />
+      <span class="divider"></span>
+      <h1>SRM Damage Assessment Tool</h1>
+    </div>
+
+    <div class="right">
+      <span class="meta">Prototype • Advisory use only</span>
+      <a class="btn" href="https://srm-damage-assessment.streamlit.app/?embed=true" target="_blank" rel="noopener">
+        <!-- external-link icon -->
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z"></path>
+          <path d="M5 5h7v2H7v10h10v-5h2v7H5V5z"></path>
+        </svg>
+        Open in new tab
+      </a>
+    </div>
   </header>
 
-  <main>
-    <iframe
-  src="https://srm-damage-assessment.streamlit.app/?embed=true"
-  title="SRM Damage Assessment Tool"
-  loading="lazy"
-></iframe>
-
-  </main>
-
-  <noscript>
-    <div class="fallback">
-      JavaScript is required to use this tool.
-      <a href="https://srm-damage-assessment.streamlit.app/" target="_blank">
-        Open the SRM Damage Assessment Tool in a new tab
-      </a>.
+  <div class="shell">
+    <div class="notice" role="note" aria-label="Advisory notice">
+      <div>
+        <strong>Advisory tool — verify against the current SRM and operator procedures.</strong>
+        <p>
+          Outputs are generated from prototype rules and user-provided inputs.
+          Always confirm applicability, limits, and repair actions using the latest approved documentation.
+        </p>
+      </div>
+      <div class="actions">
+        <a href="https://srm-damage-assessment.streamlit.app/" target="_blank" rel="noopener">Open Streamlit directly</a>
+      </div>
     </div>
-  </noscript>
 
-  <div class="fallback">
-    If the tool does not load,
-    <a href="https://srm-damage-assessment.streamlit.app/" target="_blank">
-      open it in a new tab
-    </a>.
+    <div class="frame-wrap">
+      <div class="frame-topbar">
+        <div class="left">
+          <div class="title">Fuselage Dent Checker (Prototype)</div>
+          <div class="sub">Quick AOG entry supported • Logs saved in SQLite (app-side)</div>
+        </div>
+
+        <div class="tools">
+          <button class="toolbtn" type="button" id="btnFullscreen" title="Fullscreen">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 14H5v5h5v-2H7v-3zm0-4h3V7h3V5H5v5h2V7zm10 10h-3v2h5v-5h-2v3zm0-16V2h-5v2h3v3h2V4z"></path>
+            </svg>
+            Fullscreen
+          </button>
+
+          <button class="toolbtn" type="button" id="btnReload" title="Reload the embedded tool">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M17.65 6.35A7.95 7.95 0 0012 4V1L7 6l5 5V7a5 5 0 11-5 5H5a7 7 0 107.75-6.95 7.9 7.9 0 014.9 1.3z"></path>
+            </svg>
+            Reload
+          </button>
+
+          <a class="toolbtn" href="https://www.ferasaviation.info/" target="_blank" rel="noopener" title="Back to Feras Aviation">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3l9 8h-3v10h-5v-6H11v6H6V11H3l9-8z"></path>
+            </svg>
+            FerasAviation.info
+          </a>
+        </div>
+      </div>
+
+      <!-- Streamlit embed -->
+      <iframe
+        id="srmFrame"
+        src="https://srm-damage-assessment.streamlit.app/?embed=true"
+        title="SRM Damage Assessment Tool"
+        loading="lazy"
+      ></iframe>
+
+      <noscript>
+        <div style="padding: 1rem; border-top: 1px solid var(--border); background: #fff;">
+          JavaScript is required for some site controls (fullscreen/reload). You can still use the tool directly:
+          <a href="https://srm-damage-assessment.streamlit.app/" target="_blank" rel="noopener" style="color: var(--link); font-weight: 600;">
+            Open SRM Damage Assessment Tool
+          </a>.
+        </div>
+      </noscript>
+    </div>
   </div>
 
+  <footer>
+    <div class="row">
+      <div>
+        © <span id="year"></span> Feras Aviation •
+        <a href="https://www.ferasaviation.info/" target="_blank" rel="noopener">www.ferasaviation.info</a>
+      </div>
+      <div class="version" title="Site wrapper version">
+        v0.1 • embed wrapper
+      </div>
+    </div>
+    <div style="margin-top: 0.5rem;">
+      This tool is provided for informational support only. It does not replace approved engineering data or regulatory requirements.
+    </div>
+  </footer>
+
+  <script>
+    // Footer year
+    document.getElementById("year").textContent = new Date().getFullYear();
+
+    // Fullscreen (attempts fullscreen for the iframe element)
+    const frame = document.getElementById("srmFrame");
+    const btnFullscreen = document.getElementById("btnFullscreen");
+    const btnReload = document.getElementById("btnReload");
+
+    btnFullscreen.addEventListener("click", async () => {
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+          return;
+        }
+        // Request fullscreen on the iframe itself
+        if (frame.requestFullscreen) {
+          await frame.requestFullscreen();
+        } else if (frame.webkitRequestFullscreen) {
+          frame.webkitRequestFullscreen(); // Safari
+        } else if (frame.msRequestFullscreen) {
+          frame.msRequestFullscreen(); // IE/Edge legacy
+        } else {
+          alert("Fullscreen is not supported by this browser.");
+        }
+      } catch (e) {
+        // Some browsers block fullscreen for cross-origin iframes.
+        alert("Fullscreen may be blocked for embedded content. Use 'Open in new tab' instead.");
+      }
+    });
+
+    // Reload iframe
+    btnReload.addEventListener("click", () => {
+      // bust cache without changing origin
+      const url = new URL(frame.src);
+      url.searchParams.set("_ts", Date.now());
+      frame.src = url.toString();
+    });
+  </script>
 </body>
 </html>

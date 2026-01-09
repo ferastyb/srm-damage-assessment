@@ -5,43 +5,21 @@
   <title>SRM Damage Assessment Tool • Feras Aviation</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- Favicon (use relative path for GitHub Pages project sites) -->
+  <!-- Favicon (relative path for GitHub Pages project sites) -->
   <link rel="icon" href="assets/favicon.ico" type="image/x-icon" />
 
   <style>
-
-    html, body {
-  height: 100%;
-}
-
-body {
-  margin: 0;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-
-  /* Static background similar to ferasaviation.info */
-  background:
-    radial-gradient(
-      circle at top left,
-      #f8fafc 0%,
-      #eef2f7 35%,
-      #e5e9f0 100%
-    );
-  background-attachment: fixed;
-}
-
     * { box-sizing: border-box; }
 
     :root{
       --header-h: 64px;
-      --bg: #f5f5f5;
       --card: #ffffff;
       --text: #111827;
       --muted: #6b7280;
       --border: #e5e7eb;
-      --nav: #111827;
-      --navText: #f9fafb;
       --shadow: 0 6px 18px rgba(0,0,0,0.08);
       --radius: 14px;
+      --navText: #f9fafb;
     }
 
     html, body { height: 100%; }
@@ -49,14 +27,19 @@ body {
     body {
       margin: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
       color: var(--text);
+
+      /* Static background (clean corporate look, fixed like a "site wallpaper") */
+      background:
+        radial-gradient(circle at top left, #f8fafc 0%, #eef2f7 35%, #e5e9f0 100%);
+      background-attachment: fixed;
     }
 
+    /* Header */
     header {
       height: var(--header-h);
       padding: 0 1.25rem;
-      background: var(--nav);
+      background: linear-gradient(90deg, #0f172a, #111827);
       color: var(--navText);
       display: flex;
       align-items: center;
@@ -64,21 +47,34 @@ body {
       position: sticky;
       top: 0;
       z-index: 50;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.25);
     }
 
+    /* Logo becomes a link */
     .brand {
       display: flex;
       align-items: center;
       gap: 0.9rem;
       min-width: 0;
+      text-decoration: none;
+      color: inherit;
     }
 
-    /* Logo fix: relative URL in HTML + robust sizing here */
+    .brand:focus-visible {
+      outline: 2px solid rgba(255,255,255,0.7);
+      outline-offset: 4px;
+      border-radius: 10px;
+    }
+
     .brand img {
       height: 34px;
       width: auto;
       display: block;
+
+      /* subtle backing helps if logo is transparent/white */
+      background: rgba(255,255,255,0.06);
+      padding: 2px 6px;
+      border-radius: 6px;
     }
 
     .divider {
@@ -100,23 +96,26 @@ body {
 
     .meta {
       font-size: 0.85rem;
-      opacity: 0.8;
+      opacity: 0.85;
       white-space: nowrap;
     }
 
+    /* Page shell */
     .shell {
       max-width: 1200px;
       margin: 0 auto;
       padding: 1rem 1rem 0.75rem;
     }
 
+    /* Advisory notice */
     .notice {
-      background: var(--card);
+      background: rgba(255,255,255,0.9);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       padding: 0.9rem 1rem;
       margin-bottom: 0.9rem;
+      backdrop-filter: blur(6px);
     }
 
     .notice strong {
@@ -132,12 +131,14 @@ body {
       line-height: 1.35;
     }
 
+    /* App frame card */
     .frame-wrap {
-      background: var(--card);
+      background: rgba(255,255,255,0.92);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       overflow: hidden;
+      backdrop-filter: blur(6px);
     }
 
     .frame-topbar {
@@ -189,7 +190,6 @@ body {
       border-radius: 10px;
       font-size: 0.85rem;
       cursor: pointer;
-      text-decoration: none;
       display: inline-flex;
       align-items: center;
       gap: 0.45rem;
@@ -212,6 +212,7 @@ body {
       opacity: 0.85;
     }
 
+    /* Embedded app */
     iframe {
       width: 100%;
       height: calc(100vh - var(--header-h) - 220px);
@@ -221,11 +222,12 @@ body {
       display: block;
     }
 
+    /* Footer */
     footer {
       max-width: 1200px;
       margin: 0 auto;
       padding: 0.75rem 1rem 1.25rem;
-      color: var(--muted);
+      color: rgba(17,24,39,0.70);
       font-size: 0.85rem;
       line-height: 1.35;
     }
@@ -249,6 +251,7 @@ body {
       white-space: nowrap;
     }
 
+    /* Mobile tweaks */
     @media (max-width: 720px) {
       header { padding: 0 0.85rem; }
       .divider { display: none; }
@@ -263,16 +266,12 @@ body {
 
 <body>
   <header>
-    <div class="brand">
-      <!-- IMPORTANT: relative path so it works on Pages -->
-      <a href="https://www.ferasaviation.info" class="brand" target="_self" aria-label="Feras Aviation">
-  <img src="assets/FA_logo.png?v=2" alt="Feras Aviation Logo">
-</a>
-
-
+    <!-- Logo links to main site (same tab) -->
+    <a class="brand" href="https://www.ferasaviation.info" target="_self" aria-label="Go to Feras Aviation">
+      <img src="assets/FA_logo.png?v=3" alt="Feras Aviation Logo" />
       <span class="divider"></span>
       <h1>SRM Damage Assessment Tool</h1>
-    </div>
+    </a>
 
     <span class="meta">Prototype • Advisory use only</span>
   </header>

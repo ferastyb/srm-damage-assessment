@@ -142,13 +142,20 @@
 
     /* App frame card */
     .frame-wrap {
-      background: rgba(255,255,255,0.92);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      overflow: hidden;
-      backdrop-filter: blur(6px);
-    }
+  background: rgba(255, 255, 255, 0.85); /* semi-transparent */
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--radius);
+  box-shadow:
+    0 10px 30px rgba(0,0,0,0.12),
+    inset 0 0 0 1px rgba(255,255,255,0.25);
+  overflow: hidden;
+
+  /* subtle glass effect */
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+    
 
     .frame-topbar {
       display: flex;

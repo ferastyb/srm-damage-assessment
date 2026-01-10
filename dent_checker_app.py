@@ -4,6 +4,8 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 from rules_engine import assess_damage
+from rules_engine import assess_damage
+
 
 import streamlit as st
 
@@ -403,26 +405,11 @@ if submitted:
     )
 
     ctx = {
-    "location": {
-        "zone": "fuselage",
-        "side": st.session_state.get("side", "ANY"),
-        "sta": st.session_state.get("sta"),
-        "wl": st.session_state.get("wl"),
-        "stringer_num": st.session_state.get("stringer_num"),
-        "pressurized": True,
-    },
-    "damage": {
-        "type": "dent",
-        "structure": "skin",
-        "diameter_mm": st.session_state.get("dent_diameter_mm"),
-        "depth_mm": st.session_state.get("dent_depth_mm"),
-        "visible_crack": st.session_state.get("visible_crack", False),
-        "near_fastener_row": st.session_state.get("near_fastener_row", False),
-        "depth_to_thickness_ratio": st.session_state.get("depth_to_thickness_ratio"),
-    }
+  "location": {"zone": "fuselage", "side": "LH", "sta": 1280, "wl": None, "stringer_num": 10, "pressurized": True},
+  "damage": {"type": "dent", "structure": "skin", "diameter_mm": 25, "depth_mm": 3, "visible_crack": False},
 }
-
 result = assess_damage("rules.db", "B787", ctx)
+
 
 st.subheader("Rule-based Assessment")
 st.write(f"**Disposition:** {result.disposition}")

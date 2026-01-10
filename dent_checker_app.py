@@ -3,6 +3,7 @@ import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime
+from rules_engine import assess_damage
 
 import streamlit as st
 
@@ -401,30 +402,40 @@ if submitted:
         )
     )
 
-    ctx = DamageContext(
-        aircraft_type=aircraft_type,
-        structure_zone=structure_zone,
-        area_pressurized=area_pressurized,
-        srm_reference=srm_reference.strip() or None,
-    )
+    ctx = {
+    "location": {
+        "zone": "fuselage",
+        "side": st.session_state.get("side", "ANY"),
+        "sta": st.session_state.get("sta"),
+        "wl": st.session_state.get("wl"),
+        "stringer_num": st.session_state.get("stringer_num"),
+        "pressurized": True,
+    },
+    "damage": {
+        "type": "dent",
+        "structure": "skin",
+        "diameter_mm": st.session_state.get("dent_diameter_mm"),
+        "depth_mm": st.session_state.get("dent_depth_mm"),
+        "visible_crack": st.session_state.get("visible_crack", False),
+        "near_fastener_row": st.session_state.get("near_fastener_row", False),
+        "depth_to_thickness_ratio": st.session_state.get("depth_to_thickness_ratio"),
+    }
+}
 
-    dent = DentDamage(
-        context=ctx,
-        side=side,
-        station=station,
-        waterline=waterline,
-        stringer=stringer.strip() or None,
-        depth_mm=depth_mm,
-        length_mm=length_mm,
-        width_mm=width_mm,
-        distance_to_nearest_frame_mm=dist_frame_mm,
-        distance_to_nearest_stringer_mm=dist_stringer_mm,
-        skin_thickness_mm=skin_thickness_mm,
-        notes=notes.strip(),
-    )
+result = assess_damage("rules.db", "B787", ctx)
 
-    result = assess_dent(dent)
-    summary_text = build_plain_text_summary(result)
+st.subheader("Rule-based Assessment")
+st.write(f"**Disposition:** {result.disposition}")
+st.write(f"**Severity:** {result.severity}")
+if result.srm_ref:
+    st.write(f"**SRM Ref:** {result.srm_ref}")
+if result.rule_id is not None:
+    st.write(f"**Rule ID:** {result.rule_id}")
+
+st.markdown("### Reasoning")
+for r in result.reasons:
+    st.write(f"- {r}")
+
 
     # Log to SQLite
     log_assessment(dent, result.within_limits, summary_text, result.raw_input)

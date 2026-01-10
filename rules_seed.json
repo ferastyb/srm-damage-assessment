@@ -1,0 +1,329 @@
+{
+  "rule_set": {
+    "name": "B787 SRM Demo Ruleset",
+    "aircraft_family": "B787",
+    "revision": "DEMO-01",
+    "effective_date": "2026-01-10",
+    "source": "DEMO (non-authoritative)"
+  },
+  "rules": [
+    {
+      "enabled": 1,
+      "priority": 100,
+      "damage_type": "dent",
+      "structure": "skin",
+      "structure_zone": "fuselage",
+      "zone_detail": null,
+      "side": "ANY",
+      "sta_min": null,
+      "sta_max": null,
+      "wl_min": null,
+      "wl_max": null,
+      "stringer_min": null,
+      "stringer_max": null,
+      "pressurized": 1,
+      "material": null,
+      "conditions": {
+        "requires_no_visible_crack": true
+      },
+      "limits": {
+        "max_diameter_mm": 30,
+        "max_depth_mm": 1.5,
+        "notes": "Demo: within limits only if no visible crack."
+      },
+      "actions": {
+        "disposition": "ALLOW_AS_IS",
+        "next_steps": [
+          "Record damage dimensions and location.",
+          "Monitor during scheduled inspection."
+        ],
+        "references": [
+          { "type": "SRM", "ref": "DEMO-REF: Fuselage skin dent limits" }
+        ]
+      },
+      "srm_ref": "DEMO-REF: 53-XX",
+      "severity": "allow",
+      "notes": "Generic pressurized fuselage skin dent allow-as-is (demo).",
+      "source_page": "DEMO"
+    },
+    {
+      "enabled": 1,
+      "priority": 120,
+      "damage_type": "dent",
+      "structure": "skin",
+      "structure_zone": "fuselage",
+      "zone_detail": "crown",
+      "side": "ANY",
+      "sta_min": 1200,
+      "sta_max": 1400,
+      "wl_min": null,
+      "wl_max": null,
+      "stringer_min": null,
+      "stringer_max": null,
+      "pressurized": 1,
+      "material": null,
+      "conditions": {
+        "requires_no_visible_crack": true,
+        "deny_if": [
+          { "field": "damage.visible_crack", "op": "==", "value": true }
+        ]
+      },
+      "limits": {
+        "max_diameter_mm": 20,
+        "max_depth_mm": 1.0,
+        "notes": "Demo: crown area tighter limits."
+      },
+      "actions": {
+        "disposition": "ALLOW_AS_IS",
+        "next_steps": [
+          "Record and re-inspect at next opportunity."
+        ],
+        "references": [
+          { "type": "SRM", "ref": "DEMO-REF: Crown skin dent limits" }
+        ]
+      },
+      "srm_ref": "DEMO-REF: 53-XX crown",
+      "severity": "allow",
+      "notes": "More specific rule: crown region STA 1200–1400 (demo).",
+      "source_page": "DEMO"
+    },
+    {
+      "enabled": 1,
+      "priority": 200,
+      "damage_type": "dent",
+      "structure": "skin",
+      "structure_zone": "fuselage",
+      "zone_detail": null,
+      "side": "ANY",
+      "sta_min": null,
+      "sta_max": null,
+      "wl_min": null,
+      "wl_max": null,
+      "stringer_min": null,
+      "stringer_max": null,
+      "pressurized": null,
+      "material": null,
+      "conditions": {
+        "deny_if": [
+          { "field": "damage.visible_crack", "op": "==", "value": true }
+        ]
+      },
+      "limits": {
+        "notes": "Demo: any visible crack drives engineering / crack evaluation path."
+      },
+      "actions": {
+        "disposition": "ENGINEERING_REVIEW",
+        "next_steps": [
+          "Stop: crack present. Use crack evaluation procedure.",
+          "Capture photos and NDT as required."
+        ],
+        "references": [
+          { "type": "SRM", "ref": "DEMO-REF: Crack decision gate" }
+        ]
+      },
+      "srm_ref": "DEMO-REF: 53-XX crack gate",
+      "severity": "engineering",
+      "notes": "If crack exists, do not use dent allowables (demo).",
+      "source_page": "DEMO"
+    },
+    {
+      "enabled": 1,
+      "priority": 150,
+      "damage_type": "dent",
+      "structure": "skin",
+      "structure_zone": "fuselage",
+      "zone_detail": null,
+      "side": "ANY",
+      "sta_min": null,
+      "sta_max": null,
+      "wl_min": null,
+      "wl_max": null,
+      "stringer_min": null,
+      "stringer_max": null,
+      "pressurized": 1,
+      "material": null,
+      "conditions": {
+        "requires_no_visible_crack": true,
+        "allow_if": [
+          { "field": "damage.depth_to_thickness_ratio", "op": "<=", "value": 0.4 }
+        ]
+      },
+      "limits": {
+        "max_depth_to_thickness_ratio": 0.4,
+        "notes": "Demo: ratio-based rule; requires skin thickness to be known/estimated."
+      },
+      "actions": {
+        "disposition": "ALLOW_AS_IS",
+        "next_steps": [
+          "Confirm thickness source (drawing/SRM zone map).",
+          "Record ratio used in assessment."
+        ],
+        "references": [
+          { "type": "SRM", "ref": "DEMO-REF: Depth/thickness dent rule" }
+        ]
+      },
+      "srm_ref": "DEMO-REF: 53-XX ratio",
+      "severity": "allow",
+      "notes": "Ratio-based allowable dent rule (demo).",
+      "source_page": "DEMO"
+    },
+    {
+      "enabled": 1,
+      "priority": 180,
+      "damage_type": "dent",
+      "structure": "skin",
+      "structure_zone": "fuselage",
+      "zone_detail": null,
+      "side": "ANY",
+      "sta_min": null,
+      "sta_max": null,
+      "wl_min": null,
+      "wl_max": null,
+      "stringer_min": null,
+      "stringer_max": null,
+      "pressurized": 1,
+      "material": null,
+      "conditions": {
+        "requires_no_visible_crack": true,
+        "allow_if": [
+          { "field": "damage.near_fastener_row", "op": "==", "value": false }
+        ]
+      },
+      "limits": {
+        "notes": "Demo: dents near fastener rows require engineering review."
+      },
+      "actions": {
+        "disposition": "ENGINEERING_REVIEW",
+        "next_steps": [
+          "If within 25 mm of a fastener row, escalate for engineering assessment.",
+          "Provide measurements and proximity details."
+        ],
+        "references": [
+          { "type": "SRM", "ref": "DEMO-REF: Fastener proximity gate" }
+        ]
+      },
+      "srm_ref": "DEMO-REF: 53-XX fastener",
+      "severity": "engineering",
+      "notes": "Proximity gate example (demo).",
+      "source_page": "DEMO"
+    },
+    {
+      "enabled": 1,
+      "priority": 110,
+      "damage_type": "scratch",
+      "structure": "skin",
+      "structure_zone": "fuselage",
+      "zone_detail": null,
+      "side": "ANY",
+      "sta_min": null,
+      "sta_max": null,
+      "wl_min": null,
+      "wl_max": null,
+      "stringer_min": null,
+      "stringer_max": null,
+      "pressurized": 1,
+      "material": null,
+      "conditions": {
+        "deny_if": [
+          { "field": "damage.visible_crack", "op": "==", "value": true }
+        ]
+      },
+      "limits": {
+        "max_depth_mm": 0.5,
+        "notes": "Demo: shallow scratch may be blendable; crack escalates."
+      },
+      "actions": {
+        "disposition": "REPAIR_REQUIRED",
+        "next_steps": [
+          "Blend/finish per approved procedure.",
+          "Re-measure after blend."
+        ],
+        "references": [
+          { "type": "SRM", "ref": "DEMO-REF: Scratch blend procedure" }
+        ]
+      },
+      "srm_ref": "DEMO-REF: 53-XX scratch",
+      "severity": "repair",
+      "notes": "Scratch rule example (demo).",
+      "source_page": "DEMO"
+    },
+    {
+      "enabled": 1,
+      "priority": 115,
+      "damage_type": "gouge",
+      "structure": "skin",
+      "structure_zone": "fuselage",
+      "zone_detail": null,
+      "side": "ANY",
+      "sta_min": null,
+      "sta_max": null,
+      "wl_min": null,
+      "wl_max": null,
+      "stringer_min": null,
+      "stringer_max": null,
+      "pressurized": 1,
+      "material": null,
+      "conditions": {
+        "deny_if": [
+          { "field": "damage.visible_crack", "op": "==", "value": true }
+        ]
+      },
+      "limits": {
+        "max_depth_mm": 0.8,
+        "notes": "Demo: gouges beyond threshold require repair or engineering."
+      },
+      "actions": {
+        "disposition": "ENGINEERING_REVIEW",
+        "next_steps": [
+          "Assess remaining thickness / local reinforcement need.",
+          "Provide photos, dimensions, and location."
+        ],
+        "references": [
+          { "type": "SRM", "ref": "DEMO-REF: Gouge assessment gate" }
+        ]
+      },
+      "srm_ref": "DEMO-REF: 53-XX gouge",
+      "severity": "engineering",
+      "notes": "Gouge rule example (demo).",
+      "source_page": "DEMO"
+    },
+    {
+      "enabled": 1,
+      "priority": 90,
+      "damage_type": "dent",
+      "structure": "skin",
+      "structure_zone": "fuselage",
+      "zone_detail": null,
+      "side": "ANY",
+      "sta_min": null,
+      "sta_max": null,
+      "wl_min": null,
+      "wl_max": null,
+      "stringer_min": null,
+      "stringer_max": null,
+      "pressurized": 0,
+      "material": null,
+      "conditions": {
+        "requires_no_visible_crack": true
+      },
+      "limits": {
+        "max_diameter_mm": 40,
+        "max_depth_mm": 2.0,
+        "notes": "Demo: non-pressurized areas allow slightly larger dents."
+      },
+      "actions": {
+        "disposition": "ALLOW_AS_IS",
+        "next_steps": [
+          "Record and re-inspect per operator schedule."
+        ],
+        "references": [
+          { "type": "SRM", "ref": "DEMO-REF: Non-pressurized dent limits" }
+        ]
+      },
+      "srm_ref": "DEMO-REF: 53-XX non-press",
+      "severity": "allow",
+      "notes": "Non-pressurized dent rule example (demo).",
+      "source_page": "DEMO"
+    }
+  ]
+}

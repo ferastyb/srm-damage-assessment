@@ -271,7 +271,7 @@ def parse_damage_description(text: str) -> Dict[str, Any]:
 # ---------------------------
 # UI
 # ---------------------------
-st.set_page_config(page_title="Structural Damage Assessment", layout="wide")
+st.set_page_config(page_title="SRM Structural Damage Assessment", layout="wide")
 st.title(APP_TITLE)
 st.caption("Advisory only — verify against the current SRM and operator procedures.")
 

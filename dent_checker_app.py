@@ -5,8 +5,6 @@ from pathlib import Path
 from datetime import datetime
 from rules_engine import assess_damage
 from rules_engine import assess_damage
-import os
-st.sidebar.success(f"rules.db present: {os.path.exists('rules.db')}")
 
 
 import streamlit as st

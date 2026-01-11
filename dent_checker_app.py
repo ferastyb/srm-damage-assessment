@@ -425,7 +425,18 @@ for r in result.reasons:
 
 
     # Log to SQLite
-    log_assessment(dent, result.within_limits, summary_text, result.raw_input)
+   raw_text = st.session_state.get("damage_description", "")  # or whatever your text_area key is
+within_limits = bool(getattr(result, "passed", False))
+
+log_assessment(
+    damage_description=raw_text,
+    within_limits=within_limits,
+    disposition=getattr(result, "disposition", ""),
+    rule_id=getattr(result, "rule_id", None),
+    srm_ref=getattr(result, "srm_ref", None),
+    reasons="\n".join(getattr(result, "reasons", []) or []),
+)
+
 
     # --------- Display results ---------
 

@@ -141,13 +141,32 @@ def parse_damage_description(text: str) -> Dict[str, Any]:
     t = (text or "").strip()
     out: Dict[str, Any] = {}
 
-    # Aircraft family/variant
-    # B787 or 787-8 etc
-    m = re.search(r"\b(B?\s*7\s*8\s*7(?:-\s*\d+)?)\b", t, flags=re.IGNORECASE)
+        # Aircraft family/variant
+    # Examples: B787, 787-8, B767, 767-300, A320, A330-200
+    t_norm = t.replace(" ", "").upper()
+
+    # Boeing: 737/747/757/767/777/787 with optional -xxx
+    m = re.search(r"\bB?(7(3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]))(?:-?(\d{1,4}))?\b", t_norm)
     if m:
-        fam = m.group(1).replace(" ", "").upper()
-        out["aircraft_family"] = "B787"
-        out["aircraft_variant"] = fam.replace("B", "")
+        family_num = m.group(1)  # e.g. "787" or "767"
+        variant = m.group(3)     # e.g. "8" or "300" or None
+        out["aircraft_family"] = f"B{family_num}"
+        if variant:
+            out["aircraft_variant"] = f"{family_num}-{variant}"
+        else:
+            out["aircraft_variant"] = family_num
+
+    # Airbus (optional): A318/A319/A320/A321/A330/A340/A350/A380 with optional -xxx
+    m = re.search(r"\bA(3(18|19|20|21|30|40|50|80))(?:-?(\d{1,4}))?\b", t_norm)
+    if m:
+        family_num = m.group(1)  # e.g. "320" or "350"
+        variant = m.group(3)
+        out["aircraft_family"] = f"A{family_num}"
+        if variant:
+            out["aircraft_variant"] = f"{family_num}-{variant}"
+        else:
+            out["aircraft_variant"] = family_num
+
 
     # Zone
     if re.search(r"\bfuselage\b", t, flags=re.IGNORECASE):

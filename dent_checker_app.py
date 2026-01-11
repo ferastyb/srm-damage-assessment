@@ -1,475 +1,416 @@
-import re
 import json
+import re
 import sqlite3
-from pathlib import Path
 from datetime import datetime
-from rules_engine import assess_damage
-from rules_engine import assess_damage
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
-
+import pandas as pd
 import streamlit as st
 
-from engine.damage_models import (
-    DamageContext,
-    DentDamage,
-    assess_dent,
-    build_plain_text_summary,
-)
-
-# --------- DB setup ---------
-
-DB_PATH = Path("dent_assessments.db")
+# Uses your rules engine module
+from rules_engine import assess_damage
 
 
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+APP_TITLE = "Fuselage Dent Checker (Prototype)"
+DB_FILE = "assessments.db"
+RULES_DB = "rules.db"
+
+
+# ---------------------------
+# SQLite logging
+# ---------------------------
+def get_conn(db_path: str = DB_FILE) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
 
-def init_db():
-    conn = get_connection()
+def ensure_assessments_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS dent_assessments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            aircraft_type TEXT,
-            structure_zone TEXT,
-            area_pressurized INTEGER,
-            srm_reference TEXT,
-            side TEXT,
-            station REAL,
-            waterline REAL,
-            stringer TEXT,
-            depth_mm REAL,
-            length_mm REAL,
-            width_mm REAL,
-            distance_to_frame_mm REAL,
-            distance_to_stringer_mm REAL,
-            skin_thickness_mm REAL,
-            within_limits INTEGER,
-            summary TEXT,
-            raw_input_json TEXT
-        )
-        """
-    )
-    conn.commit()
-
-
-def log_assessment(
-    damage_description: str,
-    within_limits: bool,
-    disposition: str,
-    rule_id: int | None,
-    srm_ref: str | None,
-    reasons: str,
-):
-    # Example: insert into SQLite
-    conn = sqlite3.connect("assessments.db")
-    cur = conn.cursor()
-
-    cur.execute("""
         CREATE TABLE IF NOT EXISTS assessments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_utc TEXT NOT NULL,
-            damage_description TEXT,
-            within_limits INTEGER,
+
+            aircraft_family TEXT,
+            aircraft_variant TEXT,
+
+            zone TEXT,
+            side TEXT,
+            sta INTEGER,
+            wl INTEGER,
+            stringer_num INTEGER,
+            pressurized INTEGER,
+
+            damage_type TEXT,
+            structure TEXT,
+
+            diameter_mm REAL,
+            depth_mm REAL,
+            thickness_mm REAL,
+            depth_to_thickness_ratio REAL,
+            visible_crack INTEGER,
+            near_fastener_row INTEGER,
+
             disposition TEXT,
+            severity TEXT,
             rule_id INTEGER,
             srm_ref TEXT,
-            reasons TEXT
+            reasons TEXT,
+
+            raw_description TEXT,
+            ctx_json TEXT
         )
-    """)
-
-    cur.execute("""
-        INSERT INTO assessments (
-            created_utc, damage_description, within_limits, disposition, rule_id, srm_ref, reasons
-        ) VALUES (datetime('now'), ?, ?, ?, ?, ?, ?)
-    """, (
-        damage_description,
-        1 if within_limits else 0,
-        disposition,
-        rule_id,
-        srm_ref,
-        reasons
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-
-def load_recent_assessments(limit: int = 20):
-    conn = get_connection()
-    cur = conn.execute(
         """
-        SELECT
-            created_at,
-            aircraft_type,
-            structure_zone,
-            side,
-            station,
-            depth_mm,
-            length_mm,
-            width_mm,
-            distance_to_frame_mm,
-            distance_to_stringer_mm,
-            skin_thickness_mm,
-            within_limits
-        FROM dent_assessments
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (limit,),
     )
-    return cur.fetchall()
+    conn.commit()
 
 
-# --------- Simple parser for free-text damage description ---------
+def log_assessment(conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
+    ensure_assessments_table(conn)
 
-def parse_damage_description(text: str) -> dict:
+    conn.execute(
+        """
+        INSERT INTO assessments (
+            created_utc,
+            aircraft_family, aircraft_variant,
+            zone, side, sta, wl, stringer_num, pressurized,
+            damage_type, structure,
+            diameter_mm, depth_mm, thickness_mm, depth_to_thickness_ratio,
+            visible_crack, near_fastener_row,
+            disposition, severity, rule_id, srm_ref, reasons,
+            raw_description, ctx_json
+        ) VALUES (
+            :created_utc,
+            :aircraft_family, :aircraft_variant,
+            :zone, :side, :sta, :wl, :stringer_num, :pressurized,
+            :damage_type, :structure,
+            :diameter_mm, :depth_mm, :thickness_mm, :depth_to_thickness_ratio,
+            :visible_crack, :near_fastener_row,
+            :disposition, :severity, :rule_id, :srm_ref, :reasons,
+            :raw_description, :ctx_json
+        )
+        """,
+        payload,
+    )
+    conn.commit()
+
+
+def fetch_recent_logs(conn: sqlite3.Connection, limit: int = 50) -> pd.DataFrame:
+    ensure_assessments_table(conn)
+    df = pd.read_sql_query(
+        f"""
+        SELECT
+            id, created_utc,
+            aircraft_family, aircraft_variant,
+            zone, side, sta, stringer_num,
+            diameter_mm, depth_mm, visible_crack,
+            disposition, severity, rule_id, srm_ref
+        FROM assessments
+        ORDER BY id DESC
+        LIMIT {int(limit)}
+        """,
+        conn,
+    )
+    return df
+
+
+# ---------------------------
+# Parsing helpers (AOG text -> fields)
+# ---------------------------
+def _parse_int(s: str) -> Optional[int]:
+    try:
+        return int(s)
+    except Exception:
+        return None
+
+
+def _parse_float(s: str) -> Optional[float]:
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def parse_damage_description(text: str) -> Dict[str, Any]:
     """
-    Very simple, deterministic parser for descriptions like:
-    "B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack."
-    Returns a dict of fields you can drop into session_state/defaults.
+    Example:
+      “B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack.”
     """
-    parsed = {
-        "aircraft_type": st.session_state.get("aircraft_type", "B787-8"),
-        "structure_zone": st.session_state.get("structure_zone", "fuselage"),
-        "area_pressurized": st.session_state.get("area_pressurized", True),
-        "srm_reference": st.session_state.get(
-            "srm_reference", "SRM 53-10-XX Fig. 201 (example)"
-        ),
-        "side": st.session_state.get("side", "LH"),
-        "station": st.session_state.get("station", 1280.0),
-        "waterline": st.session_state.get("waterline", 210.0),
-        "stringer": st.session_state.get("stringer", "S-10L"),
-        "depth_mm": st.session_state.get("depth_mm", 2.5),
-        "length_mm": st.session_state.get("length_mm", 30.0),
-        "width_mm": st.session_state.get("width_mm", 30.0),
-        "skin_thickness_mm": st.session_state.get("skin_thickness_mm", 2.2),
-        "dist_frame_mm": st.session_state.get("dist_frame_mm", 120.0),
-        "dist_stringer_mm": st.session_state.get("dist_stringer_mm", 80.0),
-        "notes": st.session_state.get(
-            "notes", "No visible cracking. No wrinkles at fastener heads."
-        ),
-    }
+    t = (text or "").strip()
+    out: Dict[str, Any] = {}
 
-    if not text:
-        return parsed
-
-    lower = text.lower()
-
-    # Aircraft type (e.g. B787, B787-8, B767-300)
-    m = re.search(r"\b(b[0-9]{3,4}(?:-[0-9a-z]+)?)\b", text, re.IGNORECASE)
+    # Aircraft family/variant
+    # B787 or 787-8 etc
+    m = re.search(r"\b(B?\s*7\s*8\s*7(?:-\s*\d+)?)\b", t, flags=re.IGNORECASE)
     if m:
-        parsed["aircraft_type"] = m.group(1).upper()
+        fam = m.group(1).replace(" ", "").upper()
+        out["aircraft_family"] = "B787"
+        out["aircraft_variant"] = fam.replace("B", "")
 
-    # Structure zone
-    if "fuselage" in lower:
-        parsed["structure_zone"] = "fuselage"
-    elif "wing" in lower:
-        parsed["structure_zone"] = "wing"
-    elif "tail" in lower or "empennage" in lower:
-        parsed["structure_zone"] = "tail"
+    # Zone
+    if re.search(r"\bfuselage\b", t, flags=re.IGNORECASE):
+        out["zone"] = "fuselage"
 
-    # Side (LH / RH)
-    m = re.search(r"\b(LH|RH)\b", text, re.IGNORECASE)
+    # Side (LH/RH)
+    if re.search(r"\bLH\b|\bleft\b", t, flags=re.IGNORECASE):
+        out["side"] = "LH"
+    elif re.search(r"\bRH\b|\bright\b", t, flags=re.IGNORECASE):
+        out["side"] = "RH"
+
+    # STA
+    m = re.search(r"\bSTA\s*(\d+)\b", t, flags=re.IGNORECASE)
     if m:
-        parsed["side"] = m.group(1).upper()
+        out["sta"] = _parse_int(m.group(1))
 
-    # Station (STA 1280 etc.)
-    m = re.search(r"\bSTA\s*([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+    # WL
+    m = re.search(r"\bWL\s*(\d+)\b", t, flags=re.IGNORECASE)
     if m:
-        try:
-            parsed["station"] = float(m.group(1))
-        except ValueError:
-            pass
+        out["wl"] = _parse_int(m.group(1))
 
-    # Stringer (S-10L, S10L...)
-    m = re.search(r"\bS[-\s]?([0-9]+[LR]?)\b", text, re.IGNORECASE)
+    # Stringer like S-10L / S-10 / S10
+    m = re.search(r"\bS[- ]?(\d+)", t, flags=re.IGNORECASE)
     if m:
-        parsed["stringer"] = f"S-{m.group(1).upper()}"
+        out["stringer_num"] = _parse_int(m.group(1))
 
-    # Dent diameter (25mm dia, 25 mm diameter)
-    m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mm\s*(dia|diameter)", lower)
+    # Diameter mm (dia)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diam|diameter)\b", t, flags=re.IGNORECASE)
     if m:
-        try:
-            val = float(m.group(1))
-            parsed["length_mm"] = val
-            parsed["width_mm"] = val
-        except ValueError:
-            pass
+        out["diameter_mm"] = _parse_float(m.group(1))
 
-    # Dent depth (3mm depth, 3 mm deep)
-    m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mm\s*(depth|deep)", lower)
+    # Depth mm
+    m = re.search(r"(\d+(?:\.\d+)?)\s*mm\s*depth\b", t, flags=re.IGNORECASE)
     if m:
-        try:
-            parsed["depth_mm"] = float(m.group(1))
-        except ValueError:
-            pass
+        out["depth_mm"] = _parse_float(m.group(1))
 
-    # No visible crack / cracking
-    if "no visible crack" in lower or "no cracks" in lower:
-        if parsed["notes"]:
-            parsed["notes"] += " "
-        parsed["notes"] += "No visible cracking."
+    # Visible crack presence
+    if re.search(r"\bno\s+visible\s+crack\b|\bno\s+crack\b", t, flags=re.IGNORECASE):
+        out["visible_crack"] = False
+    elif re.search(r"\bvisible\s+crack\b|\bcrack\s+present\b", t, flags=re.IGNORECASE):
+        out["visible_crack"] = True
 
-    return parsed
+    # Damage type / structure
+    if re.search(r"\bdent\b", t, flags=re.IGNORECASE):
+        out["damage_type"] = "dent"
+    if re.search(r"\bskin\b", t, flags=re.IGNORECASE):
+        out["structure"] = "skin"
+
+    return out
 
 
-# --------- Streamlit app setup ---------
+# ---------------------------
+# UI
+# ---------------------------
+st.set_page_config(page_title="SRM Damage Assessment", layout="wide")
+st.title(APP_TITLE)
+st.caption("Advisory only — verify against the current SRM and operator procedures.")
 
-init_db()
+# File presence checks
+rules_db_exists = Path(RULES_DB).exists()
+st.sidebar.success(f"{RULES_DB} present: {rules_db_exists}")
+st.sidebar.caption("If FALSE: commit/push rules.db into the repo.")
 
-st.set_page_config(
-    page_title="Fuselage Dent Checker (Prototype)",
-    layout="centered",
-)
+# Defaults
+def ss_setdefault(k: str, v: Any) -> None:
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-st.title("Fuselage Dent Checker (Prototype)")
-st.caption(
-    "Semi-automated structural damage assessment for fuselage dents. "
-    "Advisory only – always verify against the current SRM and company procedures."
-)
 
-# --------- Initialize session_state defaults ---------
-
-defaults = {
-    "aircraft_type": "B787-8",
-    "structure_zone": "fuselage",
-    "area_pressurized": True,
-    "srm_reference": "SRM 53-10-XX Fig. 201 (example)",
-    "side": "LH",
-    "station": 1280.0,
-    "waterline": 210.0,
-    "stringer": "S-10L",
-    "depth_mm": 2.5,
-    "length_mm": 30.0,
-    "width_mm": 30.0,
-    "skin_thickness_mm": 2.2,
-    "dist_frame_mm": 120.0,
-    "dist_stringer_mm": 80.0,
-    "notes": "No visible cracking. No wrinkles at fastener heads.",
-    "damage_desc": "",
-}
-
-for k, v in defaults.items():
-    st.session_state.setdefault(k, v)
-
-# --------- Free-text damage description ---------
+ss_setdefault("aircraft_family", "B787")
+ss_setdefault("aircraft_variant", "787-8")
+ss_setdefault("zone", "fuselage")
+ss_setdefault("side", "LH")
+ss_setdefault("pressurized", True)
+ss_setdefault("sta", 1280)
+ss_setdefault("wl", None)
+ss_setdefault("stringer_num", 10)
+ss_setdefault("damage_type", "dent")
+ss_setdefault("structure", "skin")
+ss_setdefault("diameter_mm", 25.0)
+ss_setdefault("depth_mm", 3.0)
+ss_setdefault("thickness_mm", None)
+ss_setdefault("visible_crack", False)
+ss_setdefault("near_fastener_row", False)
+ss_setdefault("damage_description", "")
 
 st.subheader("Damage description (quick entry for AOG)")
+st.write("Enter or paste a free-text description; click **Parse** to auto-fill the fields below.")
 
-damage_desc = st.text_area(
-    "Enter or paste damage description",
-    value=st.session_state["damage_desc"],
-    placeholder='e.g. "B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack."',
-)
-
-if st.button("Parse description into fields"):
-    st.session_state["damage_desc"] = damage_desc
-    parsed = parse_damage_description(damage_desc)
-    for key, value in parsed.items():
-        st.session_state[key] = value
-    st.success("Description parsed into fields below. Please review before running assessment.")
-
-st.markdown("---")
-
-# --------- Structured input form ---------
-
-with st.form("dent_input_form"):
-
-    st.subheader("Context")
-
-    aircraft_type = st.text_input(
-        "Aircraft type", value=st.session_state["aircraft_type"]
+colA, colB = st.columns([3, 1], gap="large")
+with colA:
+    st.text_area(
+        "Enter or paste damage description",
+        key="damage_description",
+        height=110,
+        placeholder='e.g. "B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack."',
     )
+with colB:
+    if st.button("Parse description into fields", use_container_width=True):
+        parsed = parse_damage_description(st.session_state["damage_description"])
+        for k, v in parsed.items():
+            st.session_state[k] = v
+        st.success("Parsed and filled available fields.")
 
-    structure_zone = st.text_input(
-        "Structure zone", value=st.session_state["structure_zone"]
-    )
+st.divider()
 
-    area_pressurized = st.checkbox(
-        "Pressurized area", value=st.session_state["area_pressurized"]
-    )
+left, right = st.columns([1, 1], gap="large")
 
-    srm_reference = st.text_input(
-        "SRM reference (optional)", value=st.session_state["srm_reference"]
-    )
+with left:
+    st.markdown("### Context")
+    st.text_input("Aircraft family", key="aircraft_family")
+    st.text_input("Aircraft variant", key="aircraft_variant")
 
-    st.markdown("---")
-    st.subheader("Location (optional but useful)")
+    st.selectbox("Structure zone", options=["fuselage", "wing", "empennage", "other"], key="zone")
+    st.selectbox("Side", options=["LH", "RH", "ANY"], key="side")
+    st.checkbox("Pressurized", key="pressurized")
 
-    side = st.selectbox("Side", options=["LH", "RH"], index=0 if st.session_state["side"] == "LH" else 1)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.number_input("STA", min_value=0, max_value=99999, step=1, key="sta")
+    with c2:
+        st.number_input("WL (optional)", min_value=-99999, max_value=99999, step=1, key="wl")
+    with c3:
+        st.number_input("Stringer # (optional)", min_value=0, max_value=999, step=1, key="stringer_num")
 
-    station = st.number_input(
-        "Station (STA)", value=st.session_state["station"], step=10.0
-    )
+with right:
+    st.markdown("### Damage")
+    st.selectbox("Damage type", options=["dent", "scratch", "gouge", "crack", "corrosion", "other"], key="damage_type")
+    st.selectbox("Structure", options=["skin", "stringer", "frame", "doubler", "other"], key="structure")
 
-    waterline = st.number_input(
-        "Waterline (WL)", value=st.session_state["waterline"], step=5.0
-    )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.number_input("Dent diameter (mm)", min_value=0.0, step=0.5, key="diameter_mm")
+    with c2:
+        st.number_input("Dent depth (mm)", min_value=0.0, step=0.1, key="depth_mm")
+    with c3:
+        st.number_input("Skin thickness (mm) (optional)", min_value=0.0, step=0.1, key="thickness_mm")
 
-    stringer = st.text_input("Stringer", value=st.session_state["stringer"])
+    st.checkbox("Visible crack", key="visible_crack")
+    st.checkbox("Near fastener row", key="near_fastener_row")
 
-    st.markdown("---")
-    st.subheader("Dent dimensions")
-
-    depth_mm = st.number_input(
-        "Dent depth (mm)",
-        min_value=0.0,
-        value=st.session_state["depth_mm"],
-        step=0.1,
-    )
-
-    length_mm = st.number_input(
-        "Dent length (mm)",
-        min_value=0.0,
-        value=st.session_state["length_mm"],
-        step=1.0,
-    )
-
-    width_mm = st.number_input(
-        "Dent width (mm)",
-        min_value=0.0,
-        value=st.session_state["width_mm"],
-        step=1.0,
-    )
-
-    skin_thickness_mm = st.number_input(
-        "Skin thickness at dent (mm)",
-        min_value=0.0,
-        value=st.session_state["skin_thickness_mm"],
-        step=0.1,
-    )
-
-    st.markdown("---")
-    st.subheader("Distances to structure")
-
-    dist_frame_mm = st.number_input(
-        "Distance to nearest frame (mm)",
-        min_value=0.0,
-        value=st.session_state["dist_frame_mm"],
-        step=5.0,
-        help="Measured along the skin from the dent centre to the closest frame.",
-    )
-
-    dist_stringer_mm = st.number_input(
-        "Distance to nearest stringer (mm)",
-        min_value=0.0,
-        value=st.session_state["dist_stringer_mm"],
-        step=5.0,
-        help="Measured along the skin from the dent centre to the closest stringer.",
-    )
-
-    st.markdown("---")
-    notes = st.text_area(
-        "Notes / observations",
-        value=st.session_state["notes"],
-        height=80,
-    )
-
-    submitted = st.form_submit_button("Run assessment")
-
-# --------- Run the rule engine ---------
-
-if submitted:
-    # Persist latest values back to session_state
-    st.session_state.update(
-        dict(
-            aircraft_type=aircraft_type,
-            structure_zone=structure_zone,
-            area_pressurized=area_pressurized,
-            srm_reference=srm_reference,
-            side=side,
-            station=station,
-            waterline=waterline,
-            stringer=stringer,
-            depth_mm=depth_mm,
-            length_mm=length_mm,
-            width_mm=width_mm,
-            skin_thickness_mm=skin_thickness_mm,
-            dist_frame_mm=dist_frame_mm,
-            dist_stringer_mm=dist_stringer_mm,
-            notes=notes,
-        )
-    )
-
-    ctx = {
-  "location": {"zone": "fuselage", "side": "LH", "sta": 1280, "wl": None, "stringer_num": 10, "pressurized": True},
-  "damage": {"type": "dent", "structure": "skin", "diameter_mm": 25, "depth_mm": 3, "visible_crack": False},
-}
-result = assess_damage("rules.db", "B787", ctx)
-
+st.divider()
 
 st.subheader("Rule-based Assessment")
-st.write(f"**Disposition:** {result.disposition}")
-st.write(f"**Severity:** {result.severity}")
-if result.srm_ref:
-    st.write(f"**SRM Ref:** {result.srm_ref}")
-if result.rule_id is not None:
-    st.write(f"**Rule ID:** {result.rule_id}")
 
-st.markdown("### Reasoning")
-for r in result.reasons:
-    st.write(f"- {r}")
+with st.form("assessment_form", clear_on_submit=False):
+    submitted = st.form_submit_button("Run assessment", use_container_width=True)
 
+if submitted:
+    thickness = st.session_state.get("thickness_mm")
+    depth = st.session_state.get("depth_mm")
+    ratio = None
+    if thickness and thickness > 0 and depth is not None:
+        ratio = float(depth) / float(thickness)
 
-    # Log to SQLite
-   raw_text = st.session_state.get("damage_description", "")  # or whatever your text_area key is
-within_limits = bool(getattr(result, "passed", False))
+    ctx = {
+        "location": {
+            "zone": st.session_state.get("zone"),
+            "side": st.session_state.get("side"),
+            "sta": st.session_state.get("sta"),
+            "wl": st.session_state.get("wl"),
+            "stringer_num": st.session_state.get("stringer_num"),
+            "pressurized": bool(st.session_state.get("pressurized", True)),
+        },
+        "damage": {
+            "type": st.session_state.get("damage_type"),
+            "structure": st.session_state.get("structure"),
+            "diameter_mm": st.session_state.get("diameter_mm"),
+            "depth_mm": st.session_state.get("depth_mm"),
+            "thickness_mm": thickness,
+            "depth_to_thickness_ratio": ratio,
+            "visible_crack": bool(st.session_state.get("visible_crack", False)),
+            "near_fastener_row": bool(st.session_state.get("near_fastener_row", False)),
+        },
+    }
 
-log_assessment(
-    damage_description=raw_text,
-    within_limits=within_limits,
-    disposition=getattr(result, "disposition", ""),
-    rule_id=getattr(result, "rule_id", None),
-    srm_ref=getattr(result, "srm_ref", None),
-    reasons="\n".join(getattr(result, "reasons", []) or []),
-)
+    try:
+        result = assess_damage(
+            db_path=RULES_DB,
+            aircraft_family=st.session_state.get("aircraft_family", "B787"),
+            ctx=ctx,
+            revision=None,  # or set "DEMO-01" if you want to pin it
+        )
 
+        st.write(f"**Disposition:** {result.disposition}")
+        st.write(f"**Severity:** {result.severity}")
+        if result.srm_ref:
+            st.write(f"**SRM Ref:** {result.srm_ref}")
+        if result.rule_id is not None:
+            st.write(f"**Rule ID:** {result.rule_id}")
 
-    # --------- Display results ---------
-
-    st.markdown("---")
-    st.subheader("Assessment result")
-
-    if result.within_limits:
-        st.success("Dent is WITHIN configured limits (prototype).")
-    else:
-        st.error("Dent is OUTSIDE configured limits or data is incomplete (prototype).")
-
-    st.markdown("### Detailed checks")
-
-    for check in result.checks:
-        if check.passed:
-            st.write(f"✅ **{check.name}** – {check.message}")
+        st.markdown("### Reasoning")
+        if result.reasons:
+            for r in result.reasons:
+                st.write(f"- {r}")
         else:
-            st.write(f"⚠️ **{check.name}** – {check.message}")
+            st.write("- (no reasons returned)")
 
-    st.markdown("### Summary (for copy/paste into damage report)")
-    st.code(summary_text, language="markdown")
+        # Log into SQLite (NEW, fixed, no old variables)
+        conn = get_conn(DB_FILE)
+        payload = {
+            "created_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
 
-    st.markdown(
-        "> **Disclaimer:** This tool is a prototype and provides advisory output only. "
-        "You must verify all assessments against the latest SRM revision and "
-        "your organization's approved procedures."
+            "aircraft_family": st.session_state.get("aircraft_family"),
+            "aircraft_variant": st.session_state.get("aircraft_variant"),
+
+            "zone": st.session_state.get("zone"),
+            "side": st.session_state.get("side"),
+            "sta": st.session_state.get("sta"),
+            "wl": st.session_state.get("wl"),
+            "stringer_num": st.session_state.get("stringer_num"),
+            "pressurized": 1 if st.session_state.get("pressurized", True) else 0,
+
+            "damage_type": st.session_state.get("damage_type"),
+            "structure": st.session_state.get("structure"),
+
+            "diameter_mm": st.session_state.get("diameter_mm"),
+            "depth_mm": st.session_state.get("depth_mm"),
+            "thickness_mm": thickness,
+            "depth_to_thickness_ratio": ratio,
+            "visible_crack": 1 if st.session_state.get("visible_crack", False) else 0,
+            "near_fastener_row": 1 if st.session_state.get("near_fastener_row", False) else 0,
+
+            "disposition": result.disposition,
+            "severity": result.severity,
+            "rule_id": result.rule_id,
+            "srm_ref": result.srm_ref,
+            "reasons": "\n".join(result.reasons or []),
+
+            "raw_description": st.session_state.get("damage_description", ""),
+            "ctx_json": json.dumps(ctx, ensure_ascii=False),
+        }
+        log_assessment(conn, payload)
+        conn.close()
+
+        st.success("Assessment logged to SQLite.")
+
+        with st.expander("Debug: Context sent to rules engine"):
+            st.code(json.dumps(ctx, indent=2), language="json")
+
+    except Exception as e:
+        st.error("Assessment failed. Check logs for details.")
+        st.exception(e)
+
+st.divider()
+
+st.subheader("Assessment log (SQLite)")
+conn = get_conn(DB_FILE)
+df = fetch_recent_logs(conn, limit=50)
+conn.close()
+
+if df.empty:
+    st.info("No assessments logged yet.")
+else:
+    st.dataframe(df, use_container_width=True)
+
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download recent log CSV",
+        data=csv,
+        file_name="assessments_recent.csv",
+        mime="text/csv",
+        use_container_width=True,
     )
 
-# --------- History section ---------
-
-st.markdown("---")
-st.subheader("Previous assessments (this environment)")
-
-rows = load_recent_assessments(limit=20)
-if rows:
-    records = []
-    for r in rows:
-        d = dict(r)
-        d["within_limits"] = "YES" if d["within_limits"] == 1 else "NO"
-        records.append(d)
-    st.table(records)
-else:
-    st.info("No assessments logged yet in this environment.")
+st.caption("Note: On Streamlit Cloud, local SQLite files may not persist across rebuilds/redeploys unless you add external storage.")

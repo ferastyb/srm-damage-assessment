@@ -24,6 +24,7 @@ DAMAGE_TYPES = [
     "chafing",
     "scratch"
     "paint scratch",
+    "lightning strike"'
     "other",
 ]
 
@@ -247,6 +248,8 @@ def parse_damage_description(text: str) -> Dict[str, Any]:
         damage_type = "scratch"
     elif re.search(r"\bchaf(?:e|ing)\b", t, flags=re.IGNORECASE):
         damage_type = "chafing"
+    elif re.search(r"\blightning\b.*\bstrike\b|\blightning\b.*\bstrike\b|\blightning[- ]strike\b", t, flags=re.IGNORECASE):
+        damage_type = "lightning strike"
     elif re.search(r"\bcorros(?:ion|ive|ed)\b", t, flags=re.IGNORECASE):
         damage_type = "corrosion"
     elif re.search(r"\bgouge\b", t, flags=re.IGNORECASE):

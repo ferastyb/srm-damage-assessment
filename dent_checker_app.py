@@ -57,54 +57,47 @@ def init_db():
     conn.commit()
 
 
-def log_assessment(dent: DentDamage, within_limits: bool, summary: str, raw_input: dict):
-    conn = get_connection()
-    conn.execute(
-        """
-        INSERT INTO dent_assessments (
-            created_at,
-            aircraft_type,
-            structure_zone,
-            area_pressurized,
-            srm_reference,
-            side,
-            station,
-            waterline,
-            stringer,
-            depth_mm,
-            length_mm,
-            width_mm,
-            distance_to_frame_mm,
-            distance_to_stringer_mm,
-            skin_thickness_mm,
-            within_limits,
-            summary,
-            raw_input_json
+def log_assessment(
+    damage_description: str,
+    within_limits: bool,
+    disposition: str,
+    rule_id: int | None,
+    srm_ref: str | None,
+    reasons: str,
+):
+    # Example: insert into SQLite
+    conn = sqlite3.connect("assessments.db")
+    cur = conn.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS assessments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_utc TEXT NOT NULL,
+            damage_description TEXT,
+            within_limits INTEGER,
+            disposition TEXT,
+            rule_id INTEGER,
+            srm_ref TEXT,
+            reasons TEXT
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            dent.context.aircraft_type,
-            dent.context.structure_zone,
-            1 if dent.context.area_pressurized else 0,
-            dent.context.srm_reference,
-            dent.side,
-            dent.station,
-            dent.waterline,
-            dent.stringer,
-            dent.depth_mm,
-            dent.length_mm,
-            dent.width_mm,
-            dent.distance_to_nearest_frame_mm,
-            dent.distance_to_nearest_stringer_mm,
-            dent.skin_thickness_mm,
-            1 if within_limits else 0,
-            summary,
-            json.dumps(raw_input),
-        ),
-    )
+    """)
+
+    cur.execute("""
+        INSERT INTO assessments (
+            created_utc, damage_description, within_limits, disposition, rule_id, srm_ref, reasons
+        ) VALUES (datetime('now'), ?, ?, ?, ?, ?, ?)
+    """, (
+        damage_description,
+        1 if within_limits else 0,
+        disposition,
+        rule_id,
+        srm_ref,
+        reasons
+    ))
+
     conn.commit()
+    conn.close()
+
 
 
 def load_recent_assessments(limit: int = 20):

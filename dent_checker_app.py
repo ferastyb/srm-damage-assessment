@@ -11,7 +11,7 @@ import streamlit as st
 from rules_engine import assess_damage
 
 
-APP_TITLE = "Fuselage Dent Checker (Prototype)"
+APP_TITLE = "Structural Damage Checker (Prototype)"
 DB_FILE = "assessments.db"
 RULES_DB = "rules.db"
 

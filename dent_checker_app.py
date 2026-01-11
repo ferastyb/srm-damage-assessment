@@ -3,18 +3,28 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import pandas as pd
 import streamlit as st
 
-# Uses your rules engine module
 from rules_engine import assess_damage
 
 
 APP_TITLE = "Fuselage Dent Checker (Prototype)"
 DB_FILE = "assessments.db"
 RULES_DB = "rules.db"
+
+DAMAGE_TYPES = [
+    "dent",
+    "nick",
+    "gouge",
+    "crack",
+    "corrosion",
+    "chafing",
+    "paint scratch",
+    "other",
+]
 
 
 # ---------------------------
@@ -69,7 +79,6 @@ def ensure_assessments_table(conn: sqlite3.Connection) -> None:
 
 def log_assessment(conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
     ensure_assessments_table(conn)
-
     conn.execute(
         """
         INSERT INTO assessments (
@@ -99,12 +108,13 @@ def log_assessment(conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
 
 def fetch_recent_logs(conn: sqlite3.Connection, limit: int = 50) -> pd.DataFrame:
     ensure_assessments_table(conn)
-    df = pd.read_sql_query(
+    return pd.read_sql_query(
         f"""
         SELECT
             id, created_utc,
             aircraft_family, aircraft_variant,
             zone, side, sta, stringer_num,
+            damage_type, structure,
             diameter_mm, depth_mm, visible_crack,
             disposition, severity, rule_id, srm_ref
         FROM assessments
@@ -113,7 +123,6 @@ def fetch_recent_logs(conn: sqlite3.Connection, limit: int = 50) -> pd.DataFrame
         """,
         conn,
     )
-    return df
 
 
 # ---------------------------
@@ -133,57 +142,60 @@ def _parse_float(s: str) -> Optional[float]:
         return None
 
 
+def _has_no_crack_phrase(t: str) -> bool:
+    # Covers: "no crack", "no visible crack", "no cracks observed", etc.
+    return bool(
+        re.search(
+            r"\bno\s+(?:visible\s+)?crack(?:s)?\b|\bwithout\s+(?:visible\s+)?crack(?:s)?\b",
+            t,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def parse_damage_description(text: str) -> Dict[str, Any]:
     """
     Example:
-      “B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack.”
+      “B787, fuselage, LH side, STA 1280, S-10L, skin gouge 25mm dia, 3mm depth, no visible crack.”
     """
     t = (text or "").strip()
     out: Dict[str, Any] = {}
 
-        # Aircraft family/variant
-    # Examples: B787, 787-8, B767, 767-300, A320, A330-200
+    # Normalize for some detection
     t_norm = t.replace(" ", "").upper()
 
+    # -----------------
+    # Aircraft family/variant
     # Boeing: 737/747/757/767/777/787 with optional -xxx
     m = re.search(r"\bB?(7(3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]))(?:-?(\d{1,4}))?\b", t_norm)
     if m:
         family_num = m.group(1)  # e.g. "787" or "767"
         variant = m.group(3)     # e.g. "8" or "300" or None
         out["aircraft_family"] = f"B{family_num}"
-        if variant:
-            out["aircraft_variant"] = f"{family_num}-{variant}"
-        else:
-            out["aircraft_variant"] = family_num
+        out["aircraft_variant"] = f"{family_num}-{variant}" if variant else family_num
 
-    # Airbus (optional): A318/A319/A320/A321/A330/A340/A350/A380 with optional -xxx
+    # Airbus (optional)
     m = re.search(r"\bA(3(18|19|20|21|30|40|50|80))(?:-?(\d{1,4}))?\b", t_norm)
     if m:
-        family_num = m.group(1)  # e.g. "320" or "350"
+        family_num = m.group(1)  # e.g. "320"
         variant = m.group(3)
         out["aircraft_family"] = f"A{family_num}"
-        if variant:
-            out["aircraft_variant"] = f"{family_num}-{variant}"
-        else:
-            out["aircraft_variant"] = family_num
+        out["aircraft_variant"] = f"{family_num}-{variant}" if variant else family_num
 
-
-    # Zone
+    # -----------------
+    # Zone / location
     if re.search(r"\bfuselage\b", t, flags=re.IGNORECASE):
         out["zone"] = "fuselage"
 
-    # Side (LH/RH)
     if re.search(r"\bLH\b|\bleft\b", t, flags=re.IGNORECASE):
         out["side"] = "LH"
     elif re.search(r"\bRH\b|\bright\b", t, flags=re.IGNORECASE):
         out["side"] = "RH"
 
-    # STA
     m = re.search(r"\bSTA\s*(\d+)\b", t, flags=re.IGNORECASE)
     if m:
         out["sta"] = _parse_int(m.group(1))
 
-    # WL
     m = re.search(r"\bWL\s*(\d+)\b", t, flags=re.IGNORECASE)
     if m:
         out["wl"] = _parse_int(m.group(1))
@@ -193,27 +205,65 @@ def parse_damage_description(text: str) -> Dict[str, Any]:
     if m:
         out["stringer_num"] = _parse_int(m.group(1))
 
-    # Diameter mm (dia)
+    # -----------------
+    # Structure
+    if re.search(r"\bskin\b", t, flags=re.IGNORECASE):
+        out["structure"] = "skin"
+    elif re.search(r"\bstringer\b", t, flags=re.IGNORECASE):
+        out["structure"] = "stringer"
+    elif re.search(r"\bframe\b", t, flags=re.IGNORECASE):
+        out["structure"] = "frame"
+    elif re.search(r"\bdoubler\b", t, flags=re.IGNORECASE):
+        out["structure"] = "doubler"
+
+    # -----------------
+    # Diameter / depth
     m = re.search(r"(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diam|diameter)\b", t, flags=re.IGNORECASE)
     if m:
         out["diameter_mm"] = _parse_float(m.group(1))
 
-    # Depth mm
     m = re.search(r"(\d+(?:\.\d+)?)\s*mm\s*depth\b", t, flags=re.IGNORECASE)
     if m:
         out["depth_mm"] = _parse_float(m.group(1))
 
-    # Visible crack presence
-    if re.search(r"\bno\s+visible\s+crack\b|\bno\s+crack\b", t, flags=re.IGNORECASE):
+    # -----------------
+    # Crack presence (separate from damage_type)
+    if _has_no_crack_phrase(t):
         out["visible_crack"] = False
-    elif re.search(r"\bvisible\s+crack\b|\bcrack\s+present\b", t, flags=re.IGNORECASE):
+    elif re.search(r"\bvisible\s+crack\b|\bcrack\s+present\b|\bcracked\b", t, flags=re.IGNORECASE):
         out["visible_crack"] = True
 
-    # Damage type / structure
-    if re.search(r"\bdent\b", t, flags=re.IGNORECASE):
-        out["damage_type"] = "dent"
-    if re.search(r"\bskin\b", t, flags=re.IGNORECASE):
-        out["structure"] = "skin"
+    # -----------------
+    # Damage type detection (IMPORTANT: multiword & higher-priority first)
+    # Default: do not overwrite unless we matched something explicitly
+    damage_type: Optional[str] = None
+
+    # paint scratch (multiword)
+    if re.search(r"\bpaint\b.*\bscratch\b|\bscratch\b.*\bpaint\b|\bpaint[- ]scratch\b", t, flags=re.IGNORECASE):
+        damage_type = "paint scratch"
+    # plain "scratch" -> paint scratch (per your common list)
+    elif re.search(r"\bscratch\b", t, flags=re.IGNORECASE):
+        damage_type = "paint scratch"
+    elif re.search(r"\bchaf(?:e|ing)\b", t, flags=re.IGNORECASE):
+        damage_type = "chafing"
+    elif re.search(r"\bcorros(?:ion|ive|ed)\b", t, flags=re.IGNORECASE):
+        damage_type = "corrosion"
+    elif re.search(r"\bgouge\b", t, flags=re.IGNORECASE):
+        damage_type = "gouge"
+    elif re.search(r"\bnick\b", t, flags=re.IGNORECASE):
+        damage_type = "nick"
+    elif re.search(r"\bdent\b", t, flags=re.IGNORECASE):
+        damage_type = "dent"
+    elif re.search(r"\bcrack\b|\bcracked\b", t, flags=re.IGNORECASE):
+        # Only classify as crack if NOT explicitly "no crack"
+        if not _has_no_crack_phrase(t):
+            damage_type = "crack"
+
+    if damage_type is not None:
+        out["damage_type"] = damage_type
+        # If the description calls it a crack (and not "no crack"), visible_crack should be True
+        if damage_type == "crack" and not _has_no_crack_phrase(t):
+            out["visible_crack"] = True
 
     return out
 
@@ -225,12 +275,11 @@ st.set_page_config(page_title="SRM Damage Assessment", layout="wide")
 st.title(APP_TITLE)
 st.caption("Advisory only — verify against the current SRM and operator procedures.")
 
-# File presence checks
 rules_db_exists = Path(RULES_DB).exists()
 st.sidebar.success(f"{RULES_DB} present: {rules_db_exists}")
 st.sidebar.caption("If FALSE: commit/push rules.db into the repo.")
 
-# Defaults
+
 def ss_setdefault(k: str, v: Any) -> None:
     if k not in st.session_state:
         st.session_state[k] = v
@@ -244,6 +293,7 @@ ss_setdefault("pressurized", True)
 ss_setdefault("sta", 1280)
 ss_setdefault("wl", None)
 ss_setdefault("stringer_num", 10)
+
 ss_setdefault("damage_type", "dent")
 ss_setdefault("structure", "skin")
 ss_setdefault("diameter_mm", 25.0)
@@ -251,6 +301,7 @@ ss_setdefault("depth_mm", 3.0)
 ss_setdefault("thickness_mm", None)
 ss_setdefault("visible_crack", False)
 ss_setdefault("near_fastener_row", False)
+
 ss_setdefault("damage_description", "")
 
 st.subheader("Damage description (quick entry for AOG)")
@@ -262,7 +313,7 @@ with colA:
         "Enter or paste damage description",
         key="damage_description",
         height=110,
-        placeholder='e.g. "B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack."',
+        placeholder='e.g. "B787, fuselage, LH side, STA 1280, S-10L, skin gouge 25mm dia, 3mm depth, no visible crack."',
     )
 with colB:
     if st.button("Parse description into fields", use_container_width=True):
@@ -294,22 +345,21 @@ with left:
 
 with right:
     st.markdown("### Damage")
-    st.selectbox("Damage type", options=["dent", "scratch", "gouge", "crack", "corrosion", "other"], key="damage_type")
+    st.selectbox("Damage type", options=DAMAGE_TYPES, key="damage_type")
     st.selectbox("Structure", options=["skin", "stringer", "frame", "doubler", "other"], key="structure")
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.number_input("Dent diameter (mm)", min_value=0.0, step=0.5, key="diameter_mm")
+        st.number_input("Characteristic diameter (mm)", min_value=0.0, step=0.5, key="diameter_mm")
     with c2:
-        st.number_input("Dent depth (mm)", min_value=0.0, step=0.1, key="depth_mm")
+        st.number_input("Depth (mm)", min_value=0.0, step=0.1, key="depth_mm")
     with c3:
-        st.number_input("Skin thickness (mm) (optional)", min_value=0.0, step=0.1, key="thickness_mm")
+        st.number_input("Thickness (mm) (optional)", min_value=0.0, step=0.1, key="thickness_mm")
 
     st.checkbox("Visible crack", key="visible_crack")
     st.checkbox("Near fastener row", key="near_fastener_row")
 
 st.divider()
-
 st.subheader("Rule-based Assessment")
 
 with st.form("assessment_form", clear_on_submit=False):
@@ -348,7 +398,7 @@ if submitted:
             db_path=RULES_DB,
             aircraft_family=st.session_state.get("aircraft_family", "B787"),
             ctx=ctx,
-            revision=None,  # or set "DEMO-01" if you want to pin it
+            revision=None,
         )
 
         st.write(f"**Disposition:** {result.disposition}")
@@ -365,7 +415,6 @@ if submitted:
         else:
             st.write("- (no reasons returned)")
 
-        # Log into SQLite (NEW, fixed, no old variables)
         conn = get_conn(DB_FILE)
         payload = {
             "created_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -412,8 +461,8 @@ if submitted:
         st.exception(e)
 
 st.divider()
-
 st.subheader("Assessment log (SQLite)")
+
 conn = get_conn(DB_FILE)
 df = fetch_recent_logs(conn, limit=50)
 conn.close()
@@ -422,7 +471,6 @@ if df.empty:
     st.info("No assessments logged yet.")
 else:
     st.dataframe(df, use_container_width=True)
-
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download recent log CSV",

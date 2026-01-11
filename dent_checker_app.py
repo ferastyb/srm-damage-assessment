@@ -24,7 +24,7 @@ DAMAGE_TYPES = [
     "chafing",
     "scratch"
     "paint scratch",
-    "lightning strike"'
+    "lightning strike",
     "other",
 ]
 

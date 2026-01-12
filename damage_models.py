@@ -204,7 +204,7 @@ def log_assessment(conn: sqlite3.Connection, dent: DentDamage, result: Any, summ
 
     disposition = getattr(result, "disposition", None)
     severity = getattr(result, "severity", None)
-    srm_reference = getattr(result, "b"= getattr(result, "srm_reference", None)
+    srm_reference = getattr(result, "srm_reference", None)
     rule_id = getattr(result, "rule_id", None)
     within_limits = getattr(result, "within_limits", None)
 

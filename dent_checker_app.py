@@ -1,550 +1,341 @@
-import json
+# dent_checker_app.py
+"""
+Fuselage Dent Checker (Prototype)
+- Fast AOG free-text parsing into structured fields
+- Deterministic dent assessment (prototype rules)
+- Optional SRM search against a local SQLite FTS index (srm_index.db)
+
+This file is designed to be deployable on Streamlit Cloud.
+If SRM index DB is not present, SRM search is skipped gracefully.
+
+Expected optional files:
+- rules.db          (SQLite rules DB for future expansion)
+- srm_index.db      (SQLite FTS5 index built from SRM PDFs)
+"""
+
+from __future__ import annotations
+
+import os
 import re
 import sqlite3
-from datetime import datetime
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, Optional
-from srm_search import connect_index, search_srm, build_query_from_context
+from typing import Any, Dict, Optional, Tuple
 
-
-import pandas as pd
 import streamlit as st
 
-from rules_engine import assess_damage
+# Your existing deterministic models (already in your repo)
+from damage_models import (
+    DentDamage,
+    assess_dent,
+    build_plain_text_summary,
+)
 
-
-APP_TITLE = "Structural Damage Checker (Prototype)"
-DB_FILE = "assessments.db"
-RULES_DB = "rules.db"
-
-DAMAGE_TYPES = [
-    "dent",
-    "nick",
-    "gouge",
-    "crack",
-    "corrosion",
-    "chafing",
-    "scratch"
-    "paint scratch",
-    "lightning strike",
-    "other",
-]
+# SRM search helper (we just updated this file in your repo)
+try:
+    from srm_search import guess_srm_db_path, open_srm_index, safe_search_srm
+except Exception:  # pragma: no cover
+    guess_srm_db_path = None  # type: ignore
+    open_srm_index = None  # type: ignore
+    safe_search_srm = None  # type: ignore
 
 
 # ---------------------------
-# SQLite logging
+# Helpers
 # ---------------------------
-def get_conn(db_path: str = DB_FILE) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
 
-
-def ensure_assessments_table(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS assessments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_utc TEXT NOT NULL,
-
-            aircraft_family TEXT,
-            aircraft_variant TEXT,
-
-            zone TEXT,
-            side TEXT,
-            sta INTEGER,
-            wl INTEGER,
-            stringer_num INTEGER,
-            pressurized INTEGER,
-
-            damage_type TEXT,
-            structure TEXT,
-
-            diameter_mm REAL,
-            depth_mm REAL,
-            thickness_mm REAL,
-            depth_to_thickness_ratio REAL,
-            visible_crack INTEGER,
-            near_fastener_row INTEGER,
-
-            disposition TEXT,
-            severity TEXT,
-            rule_id INTEGER,
-            srm_ref TEXT,
-            reasons TEXT,
-
-            raw_description TEXT,
-            ctx_json TEXT
-        )
-        """
-    )
-    conn.commit()
-
-
-def log_assessment(conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
-    ensure_assessments_table(conn)
-    conn.execute(
-        """
-        INSERT INTO assessments (
-            created_utc,
-            aircraft_family, aircraft_variant,
-            zone, side, sta, wl, stringer_num, pressurized,
-            damage_type, structure,
-            diameter_mm, depth_mm, thickness_mm, depth_to_thickness_ratio,
-            visible_crack, near_fastener_row,
-            disposition, severity, rule_id, srm_ref, reasons,
-            raw_description, ctx_json
-        ) VALUES (
-            :created_utc,
-            :aircraft_family, :aircraft_variant,
-            :zone, :side, :sta, :wl, :stringer_num, :pressurized,
-            :damage_type, :structure,
-            :diameter_mm, :depth_mm, :thickness_mm, :depth_to_thickness_ratio,
-            :visible_crack, :near_fastener_row,
-            :disposition, :severity, :rule_id, :srm_ref, :reasons,
-            :raw_description, :ctx_json
-        )
-        """,
-        payload,
-    )
-    conn.commit()
-
-
-def fetch_recent_logs(conn: sqlite3.Connection, limit: int = 50) -> pd.DataFrame:
-    ensure_assessments_table(conn)
-    return pd.read_sql_query(
-        f"""
-        SELECT
-            id, created_utc,
-            aircraft_family, aircraft_variant,
-            zone, side, sta, stringer_num,
-            damage_type, structure,
-            diameter_mm, depth_mm, visible_crack,
-            disposition, severity, rule_id, srm_ref
-        FROM assessments
-        ORDER BY id DESC
-        LIMIT {int(limit)}
-        """,
-        conn,
-    )
-
-
-# ---------------------------
-# Parsing helpers (AOG text -> fields)
-# ---------------------------
-def _parse_int(s: str) -> Optional[int]:
+def _float_or_none(x: str) -> Optional[float]:
+    x = (x or "").strip()
+    if not x:
+        return None
     try:
-        return int(s)
+        return float(x)
     except Exception:
         return None
-
-
-def _parse_float(s: str) -> Optional[float]:
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-
-def _has_no_crack_phrase(t: str) -> bool:
-    # Covers: "no crack", "no visible crack", "no cracks observed", etc.
-    return bool(
-        re.search(
-            r"\bno\s+(?:visible\s+)?crack(?:s)?\b|\bwithout\s+(?:visible\s+)?crack(?:s)?\b",
-            t,
-            flags=re.IGNORECASE,
-        )
-    )
 
 
 def parse_damage_description(text: str) -> Dict[str, Any]:
     """
+    Very lightweight parser for AOG-style descriptions.
+
     Example:
-      “B787, fuselage, LH side, STA 1280, S-10L, skin gouge 25mm dia, 3mm depth, no visible crack.”
+      "B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack."
     """
     t = (text or "").strip()
+
     out: Dict[str, Any] = {}
 
-    # Normalize for some detection
-    t_norm = t.replace(" ", "").upper()
-
-    # -----------------
-    # Aircraft family/variant
-    # Boeing: 737/747/757/767/777/787 with optional -xxx
-    m = re.search(r"\bB?(7(3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]))(?:-?(\d{1,4}))?\b", t_norm)
+    # Aircraft family/type: B787, B737, A320, E175 (accept variants like B787-8, 737-800)
+    m = re.search(r"\b(B\s?7\d{2}|A\s?3\d{2}|E\s?17[05])(?:[-\s]?\d+)?\b", t, re.I)
     if m:
-        family_num = m.group(1)  # e.g. "787" or "767"
-        variant = m.group(3)     # e.g. "8" or "300" or None
-        out["aircraft_family"] = f"B{family_num}"
-        out["aircraft_variant"] = f"{family_num}-{variant}" if variant else family_num
+        out["aircraft_type"] = m.group(0).upper().replace(" ", "")
 
-    # Airbus (optional)
-    m = re.search(r"\bA(3(18|19|20|21|30|40|50|80))(?:-?(\d{1,4}))?\b", t_norm)
-    if m:
-        family_num = m.group(1)  # e.g. "320"
-        variant = m.group(3)
-        out["aircraft_family"] = f"A{family_num}"
-        out["aircraft_variant"] = f"{family_num}-{variant}" if variant else family_num
-
-    # -----------------
-    # Zone / location
-    if re.search(r"\bfuselage\b", t, flags=re.IGNORECASE):
-        out["zone"] = "fuselage"
-
-    if re.search(r"\bLH\b|\bleft\b", t, flags=re.IGNORECASE):
+    # Side
+    if re.search(r"\bLH\b|\bleft\b", t, re.I):
         out["side"] = "LH"
-    elif re.search(r"\bRH\b|\bright\b", t, flags=re.IGNORECASE):
+    elif re.search(r"\bRH\b|\bright\b", t, re.I):
         out["side"] = "RH"
 
-    m = re.search(r"\bSTA\s*(\d+)\b", t, flags=re.IGNORECASE)
+    # STA
+    m = re.search(r"\bSTA\s*([0-9]{2,5})\b", t, re.I)
     if m:
-        out["sta"] = _parse_int(m.group(1))
+        out["sta"] = m.group(1)
 
-    m = re.search(r"\bWL\s*(\d+)\b", t, flags=re.IGNORECASE)
+    # Stringer / station line like S-10L, S10L, STR 10L
+    m = re.search(r"\bS[-\s]?(\d{1,2}[LR]?)\b", t, re.I)
     if m:
-        out["wl"] = _parse_int(m.group(1))
+        out["stringer"] = f"S-{m.group(1).upper()}"
 
-    # Stringer like S-10L / S-10 / S10
-    m = re.search(r"\bS[- ]?(\d+)", t, flags=re.IGNORECASE)
+    # Diameter (mm)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diam|diameter)\b", t, re.I)
     if m:
-        out["stringer_num"] = _parse_int(m.group(1))
+        out["diameter_mm"] = float(m.group(1))
 
-    # -----------------
-    # Structure
-    if re.search(r"\bskin\b", t, flags=re.IGNORECASE):
-        out["structure"] = "skin"
-    elif re.search(r"\bstringer\b", t, flags=re.IGNORECASE):
-        out["structure"] = "stringer"
-    elif re.search(r"\bframe\b", t, flags=re.IGNORECASE):
-        out["structure"] = "frame"
-    elif re.search(r"\bdoubler\b", t, flags=re.IGNORECASE):
-        out["structure"] = "doubler"
-
-    # -----------------
-    # Diameter / depth
-    m = re.search(r"(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diam|diameter)\b", t, flags=re.IGNORECASE)
+    # Depth (mm)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*mm\s*depth\b", t, re.I)
     if m:
-        out["diameter_mm"] = _parse_float(m.group(1))
+        out["depth_mm"] = float(m.group(1))
 
-    m = re.search(r"(\d+(?:\.\d+)?)\s*mm\s*depth\b", t, flags=re.IGNORECASE)
-    if m:
-        out["depth_mm"] = _parse_float(m.group(1))
+    # Crack present?
+    if re.search(r"\bno\s+visible\s+crack\b|\bno\s+crack\b|\bwithout\s+crack\b", t, re.I):
+        out["crack_present"] = False
+    elif re.search(r"\bcrack\b|\bcracked\b", t, re.I):
+        out["crack_present"] = True
 
-    # -----------------
-    # Crack presence (separate from damage_type)
-    if _has_no_crack_phrase(t):
-        out["visible_crack"] = False
-    elif re.search(r"\bvisible\s+crack\b|\bcrack\s+present\b|\bcracked\b", t, flags=re.IGNORECASE):
-        out["visible_crack"] = True
-
-    # -----------------
-    # Damage type detection (IMPORTANT: multiword & higher-priority first)
-    # Default: do not overwrite unless we matched something explicitly
-    damage_type: Optional[str] = None
-
-    # paint scratch (multiword)
-    if re.search(r"\bpaint\b.*\bscratch\b|\bscratch\b.*\bpaint\b|\bpaint[- ]scratch\b", t, flags=re.IGNORECASE):
-        damage_type = "paint scratch"
-# plain scratch
-    elif re.search(r"\bscratch\b", t, flags=re.IGNORECASE):
-        damage_type = "scratch"
-
-    elif re.search(r"\bchaf(?:e|ing)\b", t, flags=re.IGNORECASE):
-        damage_type = "chafing"
-    elif re.search(r"\blightning\b.*\bstrike\b|\blightning\b.*\bstrike\b|\blightning[- ]strike\b", t, flags=re.IGNORECASE):
-        damage_type = "lightning strike"
-    elif re.search(r"\bcorros(?:ion|ive|ed)\b", t, flags=re.IGNORECASE):
-        damage_type = "corrosion"
-    elif re.search(r"\bgouge\b", t, flags=re.IGNORECASE):
-        damage_type = "gouge"
-    elif re.search(r"\bnick\b", t, flags=re.IGNORECASE):
-        damage_type = "nick"
-    elif re.search(r"\bdent\b", t, flags=re.IGNORECASE):
-        damage_type = "dent"
-    elif re.search(r"\bcrack\b|\bcracked\b", t, flags=re.IGNORECASE):
-        # Only classify as crack if NOT explicitly "no crack"
-        if not _has_no_crack_phrase(t):
-            damage_type = "crack"
-
-    if damage_type is not None:
-        out["damage_type"] = damage_type
-        # If the description calls it a crack (and not "no crack"), visible_crack should be True
-        if damage_type == "crack" and not _has_no_crack_phrase(t):
-            out["visible_crack"] = True
+    # Damage type hint (kept for SRM query building)
+    if re.search(r"\bdent\b", t, re.I):
+        out["damage_type"] = "dent"
 
     return out
 
 
+def build_query_from_context(ctx: Dict[str, Any]) -> str:
+    """
+    Build a compact SRM search query from the parsed/entered context.
+    This is intentionally simple and robust for SQLite FTS.
+    """
+    parts = []
+
+    fam = ctx.get("aircraft_family") or ctx.get("aircraft_type")
+    if fam:
+        parts.append(str(fam))
+
+    for key in ("zone", "sta", "stringer", "damage_type"):
+        v = ctx.get(key)
+        if v:
+            parts.append(str(v))
+
+    d = ctx.get("diameter_mm")
+    if d is not None:
+        parts.append(f"{d:g}mm dia")
+
+    dep = ctx.get("depth_mm")
+    if dep is not None:
+        parts.append(f"{dep:g}mm depth")
+
+    crack = ctx.get("crack_present")
+    if crack is True:
+        parts.append("crack")
+    elif crack is False:
+        parts.append("no crack")
+
+    # A couple of high-value SRM keywords
+    parts.append("SRM")
+    parts.append("allowable damage")
+    parts.append("repair")
+
+    return " ".join(parts)
+
+
+def get_srm_connection() -> Optional[sqlite3.Connection]:
+    """
+    Open SRM index DB if present. Returns None if missing.
+    """
+    # Prefer an explicit env var (useful on Streamlit Cloud)
+    env_path = os.getenv("SRM_INDEX_DB", "").strip()
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            try:
+                if open_srm_index:
+                    return open_srm_index(str(p))
+                conn = sqlite3.connect(str(p), check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                return conn
+            except Exception:
+                return None
+
+    # Otherwise try to guess
+    if guess_srm_db_path:
+        guessed = guess_srm_db_path()
+        if guessed:
+            try:
+                if open_srm_index:
+                    return open_srm_index(guessed)
+                conn = sqlite3.connect(guessed, check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                return conn
+            except Exception:
+                return None
+
+    return None
+
+
 # ---------------------------
-# UI
+# Streamlit UI
 # ---------------------------
-st.set_page_config(page_title="SRM Structural Damage Assessment", layout="wide")
-st.title(APP_TITLE)
-st.caption("Advisory only — verify against the current SRM and operator procedures.")
 
-rules_db_exists = Path(RULES_DB).exists()
-st.sidebar.success(f"{RULES_DB} present: {rules_db_exists}")
-st.sidebar.caption("If FALSE: commit/push rules.db into the repo.")
+st.set_page_config(page_title="Fuselage Dent Checker (Prototype)", layout="centered")
 
+st.title("Fuselage Dent Checker (Prototype)")
+st.caption("Advisory only — always verify against the current SRM and operator procedures.")
 
-def ss_setdefault(k: str, v: Any) -> None:
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-
-ss_setdefault("aircraft_family", "B787")
-ss_setdefault("aircraft_variant", "787-8")
-ss_setdefault("zone", "fuselage")
-ss_setdefault("side", "LH")
-ss_setdefault("pressurized", True)
-ss_setdefault("sta", 1280)
-ss_setdefault("wl", None)
-ss_setdefault("stringer_num", 10)
-
-ss_setdefault("damage_type", "dent")
-ss_setdefault("structure", "skin")
-ss_setdefault("diameter_mm", 25.0)
-ss_setdefault("depth_mm", 3.0)
-ss_setdefault("thickness_mm", None)
-ss_setdefault("visible_crack", False)
-ss_setdefault("near_fastener_row", False)
-
-ss_setdefault("damage_description", "")
-
-st.subheader("Damage description (quick entry for AOG)")
-st.write("Enter or paste a free-text description; click **Parse** to auto-fill the fields below.")
-
-colA, colB = st.columns([3, 1], gap="large")
-with colA:
-    st.text_area(
+with st.expander("Damage description (quick entry for AOG)", expanded=True):
+    raw = st.text_area(
         "Enter or paste damage description",
-        key="damage_description",
+        key="raw_description",
+        placeholder='e.g. "B787, fuselage, LH side, STA 1280, S-10L, skin dent 25mm dia, 3mm depth, no visible crack."',
         height=110,
-        placeholder='e.g. "B787, fuselage, LH side, STA 1280, S-10L, skin gouge 25mm dia, 3mm depth, no visible crack."',
     )
-with colB:
-    if st.button("Parse description into fields", use_container_width=True):
-        parsed = parse_damage_description(st.session_state["damage_description"])
-        for k, v in parsed.items():
-            st.session_state[k] = v
-        st.success("Parsed and filled available fields.")
 
-st.divider()
-
-left, right = st.columns([1, 1], gap="large")
-
-with left:
-    st.markdown("### Context")
-    st.text_input("Aircraft family", key="aircraft_family")
-    st.text_input("Aircraft variant", key="aircraft_variant")
-
-    st.selectbox("Structure zone", options=["fuselage", "wing", "empennage", "other"], key="zone")
-    st.selectbox("Side", options=["LH", "RH", "ANY"], key="side")
-    st.checkbox("Pressurized", key="pressurized")
-
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns([1, 1])
     with c1:
-        st.number_input("STA", min_value=0, max_value=99999, step=1, key="sta")
+        if st.button("Parse description into fields"):
+            parsed = parse_damage_description(raw)
+            # Map parsed fields into session state defaults
+            if "aircraft_type" in parsed:
+                st.session_state["aircraft_type"] = parsed["aircraft_type"]
+            if "side" in parsed:
+                st.session_state["side"] = parsed["side"]
+            if "sta" in parsed:
+                st.session_state["sta"] = parsed["sta"]
+            if "stringer" in parsed:
+                st.session_state["stringer"] = parsed["stringer"]
+            if "diameter_mm" in parsed:
+                st.session_state["dent_diameter_mm"] = parsed["diameter_mm"]
+            if "depth_mm" in parsed:
+                st.session_state["dent_depth_mm"] = parsed["depth_mm"]
+            if "crack_present" in parsed:
+                st.session_state["crack_present"] = parsed["crack_present"]
+            st.success("Parsed. Review/adjust fields below.")
     with c2:
-        st.number_input("WL (optional)", min_value=-99999, max_value=99999, step=1, key="wl")
-    with c3:
-        st.number_input("Stringer # (optional)", min_value=0, max_value=999, step=1, key="stringer_num")
+        st.write("")
 
-with right:
-    st.markdown("### Damage")
-    st.selectbox("Damage type", options=DAMAGE_TYPES, key="damage_type")
-    st.selectbox("Structure", options=["skin", "stringer", "frame", "doubler", "other"], key="structure")
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.number_input("Characteristic diameter (mm)", min_value=0.0, step=0.5, key="diameter_mm")
-    with c2:
-        st.number_input("Depth (mm)", min_value=0.0, step=0.1, key="depth_mm")
-    with c3:
-        st.number_input("Thickness (mm) (optional)", min_value=0.0, step=0.1, key="thickness_mm")
+st.markdown("---")
+st.subheader("Context")
 
-    st.checkbox("Visible crack", key="visible_crack")
-    st.checkbox("Near fastener row", key="near_fastener_row")
+aircraft_type = st.text_input("Aircraft type / family", key="aircraft_type", placeholder="B787 / B737 / A320 / E175")
+structure_zone = st.text_input("Structure zone (optional)", key="structure_zone", placeholder="Fuselage / Wing / Empennage ...")
+side = st.selectbox("Side", ["", "LH", "RH"], key="side")
+sta = st.text_input("STA (optional)", key="sta", placeholder="1280")
+stringer = st.text_input("Stringer (optional)", key="stringer", placeholder="S-10L")
 
-st.divider()
-st.subheader("Rule-based Assessment")
+st.subheader("Dent details")
+c1, c2, c3 = st.columns(3)
+with c1:
+    dent_diameter_mm = st.number_input("Dent diameter (mm)", min_value=0.0, value=float(st.session_state.get("dent_diameter_mm") or 0.0))
+with c2:
+    dent_depth_mm = st.number_input("Dent depth (mm)", min_value=0.0, value=float(st.session_state.get("dent_depth_mm") or 0.0))
+with c3:
+    crack_present = st.checkbox("Crack present", value=bool(st.session_state.get("crack_present") or False))
 
-with st.form("assessment_form", clear_on_submit=False):
-    submitted = st.form_submit_button("Run assessment", use_container_width=True)
+notes = st.text_area("Notes (optional)", key="notes", placeholder="Any extra info (impact source, location detail, inspection results, etc.)", height=80)
 
-if submitted:
-    thickness = st.session_state.get("thickness_mm")
-    depth = st.session_state.get("depth_mm")
-    ratio = None
-    if thickness and thickness > 0 and depth is not None:
-        ratio = float(depth) / float(thickness)
+st.markdown("---")
+run = st.button("Run assessment", type="primary")
 
-    # --- SRM search (optional) ---
-ctx = {
-    "aircraft_family": st.session_state.get("aircraft_type", "").strip() or None,
-    "zone": st.session_state.get("structure_zone", "").strip() or None,
-    "sta": st.session_state.get("sta", "").strip() or None,
-    "stringer": st.session_state.get("stringer", "").strip() or None,
-    "damage_type": "dent",
-    "diameter_mm": st.session_state.get("dent_diameter_mm"),
-    "depth_mm": st.session_state.get("dent_depth_mm"),
-    "crack_present": st.session_state.get("crack_present", False),
-    "notes": st.session_state.get("notes", "").strip() or None,
-}
-
-srm_query = build_query_from_context(ctx)
-
-hits = []
-srm_error = None
-try:
-    # If your srm_search.py provides safe_search_srm:
-    hits, srm_error = safe_search_srm(
-        srm_conn,
-        srm_query,
-        aircraft_family=(ctx["aircraft_family"] or None),
-        limit=6,
+if run:
+    # Build DentDamage for deterministic assessment
+    dent = DentDamage(
+        aircraft_type=(aircraft_type or "").strip() or "UNKNOWN",
+        structure_zone=(structure_zone or "").strip() or "UNKNOWN",
+        side=(side or "").strip() or "UNKNOWN",
+        sta=(sta or "").strip() or None,
+        stringer=(stringer or "").strip() or None,
+        dent_diameter_mm=float(dent_diameter_mm),
+        dent_depth_mm=float(dent_depth_mm),
+        crack_present=bool(crack_present),
+        notes=(notes or "").strip() or None,
     )
-except Exception as e:
-    srm_error = str(e)
 
-if srm_error:
-    st.warning("SRM search failed (index not ready or DB error).")
-    st.caption(srm_error)
-else:
-    # render hits if any
-    if hits:
-        st.subheader("Relevant SRM hits (prototype search)")
-        for h in hits:
-            st.markdown(
-                f"- **{h['aircraft_family']}** rev **{h['revision']}** · "
-                f"`{h['file_name']}` · page **{h['page_no']}**\n"
-                f"  - {h['snippet']}"
-            )
+    result = assess_dent(dent)
+    summary_text = build_plain_text_summary(dent, result)
 
-    # --- SRM Search (FTS) ---
-try:
-    srm_db_exists = Path("srm_index.db").exists()
-    if srm_db_exists:
-        srm_conn = connect_index("srm_index.db")
-        srm_query = build_query_from_context(ctx)
-        hits = search_srm(
+    st.header("Rule-based Assessment")
+    st.write(f"**Disposition:** {result.disposition}")
+    st.write(f"**Severity:** {result.severity}")
+    if result.srm_reference:
+        st.write(f"**SRM Ref:** {result.srm_reference}")
+    if result.rule_id is not None:
+        st.write(f"**Rule ID:** {result.rule_id}")
+
+    st.subheader("Reasoning")
+    if result.reasoning:
+        for r in result.reasoning:
+            st.write(f"- {r}")
+    else:
+        st.write("- (No reasoning provided)")
+
+    st.subheader("Checks")
+    for check in result.checks:
+        if check.passed:
+            st.write(f"✅ **{check.name}** — {check.message}")
+        else:
+            st.write(f"⚠️ **{check.name}** — {check.message}")
+
+    st.subheader("Summary (copy/paste)")
+    st.code(summary_text, language="markdown")
+
+    # ---------------------------
+    # SRM Search (optional)
+    # ---------------------------
+    st.markdown("---")
+    st.subheader("SRM search (prototype)")
+
+    # ✅ IMPORTANT FIX: define ctx BEFORE using it (prevents NameError: ctx not defined)
+    ctx: Dict[str, Any] = {
+        "aircraft_family": (aircraft_type or "").strip() or None,
+        "aircraft_type": (aircraft_type or "").strip() or None,
+        "zone": (structure_zone or "").strip() or None,
+        "side": (side or "").strip() or None,
+        "sta": (sta or "").strip() or None,
+        "stringer": (stringer or "").strip() or None,
+        "damage_type": "dent",
+        "diameter_mm": float(dent_diameter_mm),
+        "depth_mm": float(dent_depth_mm),
+        "crack_present": bool(crack_present),
+        "notes": (notes or "").strip() or None,
+        "raw_description": (raw or "").strip() or None,
+    }
+
+    srm_query = build_query_from_context(ctx)
+    st.caption(f"Query: `{srm_query}`")
+
+    srm_conn = get_srm_connection()
+    if not srm_conn or not safe_search_srm:
+        st.info("SRM index not available in this deployment (no srm_index.db).")
+    else:
+        hits, err = safe_search_srm(
             srm_conn,
-            query=srm_query,
-            aircraft_family=st.session_state.get("aircraft_family", None),
+            srm_query,
+            aircraft_family=ctx.get("aircraft_family"),
             limit=6,
         )
-        srm_conn.close()
-
-        st.subheader("SRM References (Search)")
-        st.caption("Search-first SRM connection: results are citations (doc + page), not automated decisions.")
-
-        st.code(srm_query, language="text")
-
-        if hits:
+        if err:
+            st.warning("SRM search failed (index not ready or DB error).")
+            st.caption(err)
+        elif not hits:
+            st.write("No SRM hits found for this query.")
+        else:
             for h in hits:
                 st.markdown(
-                    f"**{h.aircraft_family} SRM (Rev {h.revision})** — *{h.title}*  \n"
-                    f"Page **{h.page_no}** • Rank `{h.rank:.2f}`"
+                    f"**{h['aircraft_family']}** rev **{h.get('revision','')}** — `{h['file_name']}` — page **{h['page_no']}**"
                 )
-                st.write(h.snippet)
-                # If you later host PDFs, this becomes clickable:
-                if h.base_url:
-                    st.write(f"PDF: {h.base_url}{h.file_name} (open and go to page {h.page_no})")
-                st.divider()
-        else:
-            st.info("No SRM hits found for this query. Try adding ATA keywords or use a simpler description.")
-    else:
-        st.info("SRM index not found (srm_index.db). Build it offline with srm_indexer.py and commit it.")
-except Exception as e:
-    st.warning("SRM search failed (index not ready or DB error).")
-    st.exception(e)
+                st.write(h["snippet"])
 
-
-    try:
-        result = assess_damage(
-            db_path=RULES_DB,
-            aircraft_family=st.session_state.get("aircraft_family", "B787"),
-            ctx=ctx,
-            revision=None,
-        )
-
-        st.write(f"**Disposition:** {result.disposition}")
-        st.write(f"**Severity:** {result.severity}")
-        if result.srm_ref:
-            st.write(f"**SRM Ref:** {result.srm_ref}")
-        if result.rule_id is not None:
-            st.write(f"**Rule ID:** {result.rule_id}")
-
-        st.markdown("### Reasoning")
-        if result.reasons:
-            for r in result.reasons:
-                st.write(f"- {r}")
-        else:
-            st.write("- (no reasons returned)")
-
-        conn = get_conn(DB_FILE)
-        payload = {
-            "created_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-
-            "aircraft_family": st.session_state.get("aircraft_family"),
-            "aircraft_variant": st.session_state.get("aircraft_variant"),
-
-            "zone": st.session_state.get("zone"),
-            "side": st.session_state.get("side"),
-            "sta": st.session_state.get("sta"),
-            "wl": st.session_state.get("wl"),
-            "stringer_num": st.session_state.get("stringer_num"),
-            "pressurized": 1 if st.session_state.get("pressurized", True) else 0,
-
-            "damage_type": st.session_state.get("damage_type"),
-            "structure": st.session_state.get("structure"),
-
-            "diameter_mm": st.session_state.get("diameter_mm"),
-            "depth_mm": st.session_state.get("depth_mm"),
-            "thickness_mm": thickness,
-            "depth_to_thickness_ratio": ratio,
-            "visible_crack": 1 if st.session_state.get("visible_crack", False) else 0,
-            "near_fastener_row": 1 if st.session_state.get("near_fastener_row", False) else 0,
-
-            "disposition": result.disposition,
-            "severity": result.severity,
-            "rule_id": result.rule_id,
-            "srm_ref": result.srm_ref,
-            "reasons": "\n".join(result.reasons or []),
-
-            "raw_description": st.session_state.get("damage_description", ""),
-            "ctx_json": json.dumps(ctx, ensure_ascii=False),
-        }
-        log_assessment(conn, payload)
-        conn.close()
-
-        st.success("Assessment logged to SQLite.")
-
-        with st.expander("Debug: Context sent to rules engine"):
-            st.code(json.dumps(ctx, indent=2), language="json")
-
-    except Exception as e:
-        st.error("Assessment failed. Check logs for details.")
-        st.exception(e)
-
-st.divider()
-st.subheader("Assessment log (SQLite)")
-
-conn = get_conn(DB_FILE)
-df = fetch_recent_logs(conn, limit=50)
-conn.close()
-
-if df.empty:
-    st.info("No assessments logged yet.")
-else:
-    st.dataframe(df, use_container_width=True)
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Download recent log CSV",
-        data=csv,
-        file_name="assessments_recent.csv",
-        mime="text/csv",
-        use_container_width=True,
+    st.markdown(
+        "> **Disclaimer:** This tool is a prototype and provides advisory output only. "
+        "You must verify all assessments against the latest SRM revision and "
+        "your organization's approved procedures."
     )
-
-st.caption("Note: On Streamlit Cloud, local SQLite files may not persist across rebuilds/redeploys unless you add external storage.")

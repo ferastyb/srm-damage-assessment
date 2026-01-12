@@ -379,26 +379,48 @@ if submitted:
     if thickness and thickness > 0 and depth is not None:
         ratio = float(depth) / float(thickness)
 
-    ctx = {
-        "location": {
-            "zone": st.session_state.get("zone"),
-            "side": st.session_state.get("side"),
-            "sta": st.session_state.get("sta"),
-            "wl": st.session_state.get("wl"),
-            "stringer_num": st.session_state.get("stringer_num"),
-            "pressurized": bool(st.session_state.get("pressurized", True)),
-        },
-        "damage": {
-            "type": st.session_state.get("damage_type"),
-            "structure": st.session_state.get("structure"),
-            "diameter_mm": st.session_state.get("diameter_mm"),
-            "depth_mm": st.session_state.get("depth_mm"),
-            "thickness_mm": thickness,
-            "depth_to_thickness_ratio": ratio,
-            "visible_crack": bool(st.session_state.get("visible_crack", False)),
-            "near_fastener_row": bool(st.session_state.get("near_fastener_row", False)),
-        },
-    }
+    # --- SRM search (optional) ---
+ctx = {
+    "aircraft_family": st.session_state.get("aircraft_type", "").strip() or None,
+    "zone": st.session_state.get("structure_zone", "").strip() or None,
+    "sta": st.session_state.get("sta", "").strip() or None,
+    "stringer": st.session_state.get("stringer", "").strip() or None,
+    "damage_type": "dent",
+    "diameter_mm": st.session_state.get("dent_diameter_mm"),
+    "depth_mm": st.session_state.get("dent_depth_mm"),
+    "crack_present": st.session_state.get("crack_present", False),
+    "notes": st.session_state.get("notes", "").strip() or None,
+}
+
+srm_query = build_query_from_context(ctx)
+
+hits = []
+srm_error = None
+try:
+    # If your srm_search.py provides safe_search_srm:
+    hits, srm_error = safe_search_srm(
+        srm_conn,
+        srm_query,
+        aircraft_family=(ctx["aircraft_family"] or None),
+        limit=6,
+    )
+except Exception as e:
+    srm_error = str(e)
+
+if srm_error:
+    st.warning("SRM search failed (index not ready or DB error).")
+    st.caption(srm_error)
+else:
+    # render hits if any
+    if hits:
+        st.subheader("Relevant SRM hits (prototype search)")
+        for h in hits:
+            st.markdown(
+                f"- **{h['aircraft_family']}** rev **{h['revision']}** · "
+                f"`{h['file_name']}` · page **{h['page_no']}**\n"
+                f"  - {h['snippet']}"
+            )
+
     # --- SRM Search (FTS) ---
 try:
     srm_db_exists = Path("srm_index.db").exists()

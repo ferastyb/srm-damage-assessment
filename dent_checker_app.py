@@ -4,6 +4,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+from srm_search import connect_index, search_srm, build_query_from_context
+
 
 import pandas as pd
 import streamlit as st
@@ -397,6 +399,44 @@ if submitted:
             "near_fastener_row": bool(st.session_state.get("near_fastener_row", False)),
         },
     }
+    # --- SRM Search (FTS) ---
+try:
+    srm_db_exists = Path("srm_index.db").exists()
+    if srm_db_exists:
+        srm_conn = connect_index("srm_index.db")
+        srm_query = build_query_from_context(ctx)
+        hits = search_srm(
+            srm_conn,
+            query=srm_query,
+            aircraft_family=st.session_state.get("aircraft_family", None),
+            limit=6,
+        )
+        srm_conn.close()
+
+        st.subheader("SRM References (Search)")
+        st.caption("Search-first SRM connection: results are citations (doc + page), not automated decisions.")
+
+        st.code(srm_query, language="text")
+
+        if hits:
+            for h in hits:
+                st.markdown(
+                    f"**{h.aircraft_family} SRM (Rev {h.revision})** — *{h.title}*  \n"
+                    f"Page **{h.page_no}** • Rank `{h.rank:.2f}`"
+                )
+                st.write(h.snippet)
+                # If you later host PDFs, this becomes clickable:
+                if h.base_url:
+                    st.write(f"PDF: {h.base_url}{h.file_name} (open and go to page {h.page_no})")
+                st.divider()
+        else:
+            st.info("No SRM hits found for this query. Try adding ATA keywords or use a simpler description.")
+    else:
+        st.info("SRM index not found (srm_index.db). Build it offline with srm_indexer.py and commit it.")
+except Exception as e:
+    st.warning("SRM search failed (index not ready or DB error).")
+    st.exception(e)
+
 
     try:
         result = assess_damage(

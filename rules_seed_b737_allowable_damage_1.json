@@ -1,5 +1,5 @@
 {
-  "ruleset": {
+  "rule_set": {
     "name": "B737 SRM Allowable Damage 1 (Demo)",
     "aircraft_family": "B737",
     "revision": "DEMO-AD1-01",

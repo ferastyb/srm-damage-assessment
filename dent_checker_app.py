@@ -27,6 +27,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
+from bootstrap_rules_db import bootstrap_rules_db
+
+bootstrap_rules_db(force=False)
 
 # -----------------------------
 # Robust imports (repo layout)

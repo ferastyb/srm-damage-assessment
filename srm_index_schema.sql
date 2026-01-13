@@ -28,10 +28,13 @@ CREATE INDEX IF NOT EXISTS idx_pages_doc_page
   ON pages(doc_id, page_no);
 
 -- Full text search virtual table
-CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts
-USING fts5(
+DROP TABLE IF EXISTS pages_fts;
+
+CREATE VIRTUAL TABLE pages_fts USING fts5(
   text,
   content='pages',
   content_rowid='id',
-  tokenize='porter'
+  tokenize='unicode61 remove_diacritics 2 tokenchars "0123456789" separators "-_/."',
+  prefix='2 3 4'
 );
+

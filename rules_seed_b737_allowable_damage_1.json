@@ -1,0 +1,121 @@
+{
+  "ruleset": {
+    "name": "B737 SRM Allowable Damage 1 (Demo)",
+    "aircraft_family": "B737",
+    "revision": "DEMO-AD1-01",
+    "source": "Sample/outdated SRM excerpt (structure and logic only)"
+  },
+  "rules": [
+    {
+      "rule_key": "B737-53-00-01-AD1-APPLICABILITY-GATE-1",
+      "title": "Not applicable near door cutout (Section 43)",
+      "priority": 10,
+      "when": {
+        "all": [
+          {"field": "structure", "op": "eq", "value": "fuselage"},
+          {"field": "section", "op": "eq", "value": 43},
+          {"field": "sta", "op": "between", "value": [360, 540]},
+          {"field": "stringer_index", "op": "between", "value": [-24, 24]},
+          {"field": "distance_from_cutout_in", "op": "gt", "value": 3.0}
+        ]
+      },
+      "then": {
+        "disposition": "ENGINEERING_REVIEW",
+        "severity": "engineering",
+        "srm_ref": "53-00-01 Allowable Damage 1 Applicability (B)(1)",
+        "reasoning": [
+          "Allowable Damage 1 is not applicable in Section 43 between STA 360–540 and Stringers 24L–24R when more than 3.0 in from a door cutout (per applicability exclusions)."
+        ]
+      }
+    },
+
+    {
+      "rule_key": "B737-53-00-01-AD1-APPLICABILITY-GATE-2",
+      "title": "Not applicable near door cutout (Section 46)",
+      "priority": 10,
+      "when": {
+        "all": [
+          {"field": "structure", "op": "eq", "value": "fuselage"},
+          {"field": "section", "op": "eq", "value": 46},
+          {"field": "sta", "op": "between", "value": [727, 887]},
+          {"field": "stringer_index", "op": "between", "value": [-23, 23]},
+          {"field": "distance_from_cutout_in", "op": "gt", "value": 3.0}
+        ]
+      },
+      "then": {
+        "disposition": "ENGINEERING_REVIEW",
+        "severity": "engineering",
+        "srm_ref": "53-00-01 Allowable Damage 1 Applicability (B)(2)",
+        "reasoning": [
+          "Allowable Damage 1 is not applicable in Section 46 between STA 727–887 and Stringers 23L–23R when more than 3.0 in from a door cutout (per applicability exclusions)."
+        ]
+      }
+    },
+
+    {
+      "rule_key": "B737-53-00-01-T102-ROW-1",
+      "title": "Dent depth < 3.175mm AND W/Y > 30 => Allowable (no repair)",
+      "priority": 50,
+      "when": {
+        "all": [
+          {"field": "structure", "op": "eq", "value": "fuselage"},
+          {"field": "damage_type", "op": "eq", "value": "dent"},
+          {"field": "has_crack", "op": "eq", "value": false},
+          {"field": "depth_mm", "op": "lt", "value": 3.175},
+          {"field": "wy_ratio", "op": "gt", "value": 30}
+        ]
+      },
+      "then": {
+        "disposition": "ALLOWABLE",
+        "severity": "info",
+        "srm_ref": "53-00-01 Table 102 Row 1 (Depth < 0.125 in, W/Y > 30)",
+        "reasoning": ["Within limits per Table 102: no repair necessary."]
+      }
+    },
+
+    {
+      "rule_key": "B737-53-00-01-T102-ROW-2",
+      "title": "Dent depth < 3.175mm AND 15 < W/Y < 30 => Repair can be delayed with inspections",
+      "priority": 50,
+      "when": {
+        "all": [
+          {"field": "structure", "op": "eq", "value": "fuselage"},
+          {"field": "damage_type", "op": "eq", "value": "dent"},
+          {"field": "has_crack", "op": "eq", "value": false},
+          {"field": "depth_mm", "op": "lt", "value": 3.175},
+          {"field": "wy_ratio", "op": "between_open", "value": [15, 30]}
+        ]
+      },
+      "then": {
+        "disposition": "REPAIR_REQUIRED_DEFERRED",
+        "severity": "warning",
+        "srm_ref": "53-00-01 Table 102 Row 2 (Depth < 0.125 in, 15 < W/Y < 30)",
+        "reasoning": [
+          "Repair required but may be deferred with inspection program (DVIs + HFEC) per Table 102."
+        ]
+      }
+    },
+
+    {
+      "rule_key": "B737-53-00-01-T102-ROW-6",
+      "title": "Dent depth > 6.35mm => Mandatory repair within 5,000 cycles",
+      "priority": 50,
+      "when": {
+        "all": [
+          {"field": "structure", "op": "eq", "value": "fuselage"},
+          {"field": "damage_type", "op": "eq", "value": "dent"},
+          {"field": "has_crack", "op": "eq", "value": false},
+          {"field": "depth_mm", "op": "gt", "value": 6.35}
+        ]
+      },
+      "then": {
+        "disposition": "REPAIR_REQUIRED",
+        "severity": "critical",
+        "srm_ref": "53-00-01 Table 102 Continued (Depth > 0.25 in)",
+        "reasoning": [
+          "Mandatory repair required per Table 102 for depth > 0.25 in, with HFEC/DVI schedule and repair deadline."
+        ]
+      }
+    }
+  ]
+}

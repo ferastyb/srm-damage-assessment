@@ -1,121 +1,223 @@
 {
   "rule_set": {
-    "name": "B737 SRM Allowable Damage 1 (Demo)",
+    "name": "B737 SRM Allowable Damage 1 (Fuselage Skin) — Demo",
     "aircraft_family": "B737",
     "revision": "DEMO-AD1-01",
-    "source": "Sample/outdated SRM excerpt (structure and logic only)"
+    "source": "Outdated SRM sample (demo only)",
+    "notes": "Seeded rules based on Allowable Damage 1 – Fuselage Skin example. Validate against current SRM before operational use."
   },
   "rules": [
     {
-      "rule_key": "B737-53-00-01-AD1-APPLICABILITY-GATE-1",
-      "title": "Not applicable near door cutout (Section 43)",
-      "priority": 10,
-      "when": {
-        "all": [
-          {"field": "structure", "op": "eq", "value": "fuselage"},
-          {"field": "section", "op": "eq", "value": 43},
-          {"field": "sta", "op": "between", "value": [360, 540]},
-          {"field": "stringer_index", "op": "between", "value": [-24, 24]},
-          {"field": "distance_from_cutout_in", "op": "gt", "value": 3.0}
+      "rule_code": "B737-AD1-REQ-001",
+      "title": "Dent eligibility requirements for Table 102 usage",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "ENGINEERING_REVIEW",
+      "severity": "engineering",
+      "srm_ref": "53-00-01 Allowable Damage 1, Table 102 footnote/requirements",
+      "logic": {
+        "any": [
+          { "field": "has_crack", "op": "==", "value": true },
+          { "field": "has_sharp_crease", "op": "==", "value": true },
+          { "field": "has_gouge", "op": "==", "value": true },
+          { "field": "has_hole_or_puncture", "op": "==", "value": true },
+          { "field": "fastener_condition", "op": "in", "value": ["broken", "pulled", "loose"] },
+          { "field": "has_elongated_fastener_hole", "op": "==", "value": true },
+          { "field": "has_substructure_damage", "op": "==", "value": true },
+          { "field": "is_common_to_stringer_or_frame", "op": "==", "value": true },
+          { "field": "distance_from_cutout_in", "op": "<", "value": 10.0 },
+          { "field": "distance_from_skin_splice_in", "op": "<", "value": 3.0 }
         ]
       },
-      "then": {
-        "disposition": "ENGINEERING_REVIEW",
-        "severity": "engineering",
-        "srm_ref": "53-00-01 Allowable Damage 1 Applicability (B)(1)",
-        "reasoning": [
-          "Allowable Damage 1 is not applicable in Section 43 between STA 360–540 and Stringers 24L–24R when more than 3.0 in from a door cutout (per applicability exclusions)."
-        ]
-      }
+      "actions": [
+        "Table 102 not applicable or requirements not met.",
+        "Escalate to engineering / refer to SRM for alternate repair or detailed evaluation."
+      ]
     },
 
     {
-      "rule_key": "B737-53-00-01-AD1-APPLICABILITY-GATE-2",
-      "title": "Not applicable near door cutout (Section 46)",
-      "priority": 10,
-      "when": {
+      "rule_code": "B737-AD1-T102-001",
+      "title": "Allowable: depth < 3.175 mm and W/Y > 30",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "ALLOWABLE",
+      "severity": "info",
+      "srm_ref": "53-00-01 Table 102",
+      "logic": {
         "all": [
-          {"field": "structure", "op": "eq", "value": "fuselage"},
-          {"field": "section", "op": "eq", "value": 46},
-          {"field": "sta", "op": "between", "value": [727, 887]},
-          {"field": "stringer_index", "op": "between", "value": [-23, 23]},
-          {"field": "distance_from_cutout_in", "op": "gt", "value": 3.0}
+          { "field": "depth_mm", "op": "<", "value": 3.175 },
+          { "field": "wy_ratio", "op": ">", "value": 30 },
+          { "field": "has_crack", "op": "==", "value": false }
         ]
       },
-      "then": {
-        "disposition": "ENGINEERING_REVIEW",
-        "severity": "engineering",
-        "srm_ref": "53-00-01 Allowable Damage 1 Applicability (B)(2)",
-        "reasoning": [
-          "Allowable Damage 1 is not applicable in Section 46 between STA 727–887 and Stringers 23L–23R when more than 3.0 in from a door cutout (per applicability exclusions)."
-        ]
-      }
+      "actions": [
+        "Allowable damage. No repair necessary."
+      ]
     },
 
     {
-      "rule_key": "B737-53-00-01-T102-ROW-1",
-      "title": "Dent depth < 3.175mm AND W/Y > 30 => Allowable (no repair)",
-      "priority": 50,
-      "when": {
+      "rule_code": "B737-AD1-T102-002",
+      "title": "Repair delayed: depth < 3.175 mm and 15 < W/Y < 30",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "REPAIR_DELAYED",
+      "severity": "warning",
+      "srm_ref": "53-00-01 Table 102",
+      "logic": {
         "all": [
-          {"field": "structure", "op": "eq", "value": "fuselage"},
-          {"field": "damage_type", "op": "eq", "value": "dent"},
-          {"field": "has_crack", "op": "eq", "value": false},
-          {"field": "depth_mm", "op": "lt", "value": 3.175},
-          {"field": "wy_ratio", "op": "gt", "value": 30}
+          { "field": "depth_mm", "op": "<", "value": 3.175 },
+          { "field": "wy_ratio", "op": ">", "value": 15 },
+          { "field": "wy_ratio", "op": "<", "value": 30 },
+          { "field": "has_crack", "op": "==", "value": false }
         ]
       },
-      "then": {
-        "disposition": "ALLOWABLE",
-        "severity": "info",
-        "srm_ref": "53-00-01 Table 102 Row 1 (Depth < 0.125 in, W/Y > 30)",
-        "reasoning": ["Within limits per Table 102: no repair necessary."]
-      }
+      "actions": [
+        "Dent must be repaired permanently, but repair may be deferred with inspections.",
+        "1) Detailed Visual Inspection initially.",
+        "2) HFEC inspection within 5,000 cycles.",
+        "3) Detailed Visual Inspection every 4,000 cycles.",
+        "4) Permanent repair before 10,000 cycles."
+      ]
     },
 
     {
-      "rule_key": "B737-53-00-01-T102-ROW-2",
-      "title": "Dent depth < 3.175mm AND 15 < W/Y < 30 => Repair can be delayed with inspections",
-      "priority": 50,
-      "when": {
+      "rule_code": "B737-AD1-T102-003",
+      "title": "Repair delayed: depth < 3.175 mm and W/Y < 15",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "REPAIR_DELAYED",
+      "severity": "warning",
+      "srm_ref": "53-00-01 Table 102",
+      "logic": {
         "all": [
-          {"field": "structure", "op": "eq", "value": "fuselage"},
-          {"field": "damage_type", "op": "eq", "value": "dent"},
-          {"field": "has_crack", "op": "eq", "value": false},
-          {"field": "depth_mm", "op": "lt", "value": 3.175},
-          {"field": "wy_ratio", "op": "between_open", "value": [15, 30]}
+          { "field": "depth_mm", "op": "<", "value": 3.175 },
+          { "field": "wy_ratio", "op": "<", "value": 15 },
+          { "field": "has_crack", "op": "==", "value": false }
         ]
       },
-      "then": {
-        "disposition": "REPAIR_REQUIRED_DEFERRED",
-        "severity": "warning",
-        "srm_ref": "53-00-01 Table 102 Row 2 (Depth < 0.125 in, 15 < W/Y < 30)",
-        "reasoning": [
-          "Repair required but may be deferred with inspection program (DVIs + HFEC) per Table 102."
-        ]
-      }
+      "actions": [
+        "Dent must be repaired permanently, but repair may be deferred with inspections.",
+        "1) Detailed Visual Inspection initially.",
+        "2) HFEC inspection within 5,000 cycles.",
+        "3) Detailed Visual Inspection every 4,000 cycles.",
+        "4) Permanent repair before 10,000 cycles."
+      ]
     },
 
     {
-      "rule_key": "B737-53-00-01-T102-ROW-6",
-      "title": "Dent depth > 6.35mm => Mandatory repair within 5,000 cycles",
-      "priority": 50,
-      "when": {
+      "rule_code": "B737-AD1-T102-004",
+      "title": "Repair delayed: 3.175–6.35 mm depth and 15 < W/Y < 30",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "REPAIR_DELAYED",
+      "severity": "warning",
+      "srm_ref": "53-00-01 Table 102",
+      "logic": {
         "all": [
-          {"field": "structure", "op": "eq", "value": "fuselage"},
-          {"field": "damage_type", "op": "eq", "value": "dent"},
-          {"field": "has_crack", "op": "eq", "value": false},
-          {"field": "depth_mm", "op": "gt", "value": 6.35}
+          { "field": "depth_mm", "op": ">=", "value": 3.175 },
+          { "field": "depth_mm", "op": "<", "value": 6.35 },
+          { "field": "wy_ratio", "op": ">", "value": 15 },
+          { "field": "wy_ratio", "op": "<", "value": 30 },
+          { "field": "has_crack", "op": "==", "value": false }
         ]
       },
-      "then": {
-        "disposition": "REPAIR_REQUIRED",
-        "severity": "critical",
-        "srm_ref": "53-00-01 Table 102 Continued (Depth > 0.25 in)",
-        "reasoning": [
-          "Mandatory repair required per Table 102 for depth > 0.25 in, with HFEC/DVI schedule and repair deadline."
+      "actions": [
+        "Dent must be repaired permanently, but repair may be deferred with inspections.",
+        "1) Detailed Visual Inspection initially.",
+        "2) HFEC inspection within 5,000 cycles.",
+        "3) Detailed Visual Inspection every 4,000 cycles.",
+        "4) Permanent repair before 10,000 cycles."
+      ]
+    },
+
+    {
+      "rule_code": "B737-AD1-T102-005",
+      "title": "Repair delayed: 3.175–6.35 mm depth and W/Y > 30",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "REPAIR_DELAYED",
+      "severity": "warning",
+      "srm_ref": "53-00-01 Table 102",
+      "logic": {
+        "all": [
+          { "field": "depth_mm", "op": ">=", "value": 3.175 },
+          { "field": "depth_mm", "op": "<", "value": 6.35 },
+          { "field": "wy_ratio", "op": ">", "value": 30 },
+          { "field": "has_crack", "op": "==", "value": false }
         ]
-      }
+      },
+      "actions": [
+        "Dent must be repaired permanently, but repair may be deferred with inspections.",
+        "1) Detailed Visual Inspection initially.",
+        "2) HFEC inspection within 5,000 cycles.",
+        "3) Detailed Visual Inspection every 4,000 cycles.",
+        "4) Permanent repair before 13,000 cycles."
+      ]
+    },
+
+    {
+      "rule_code": "B737-AD1-T102-006",
+      "title": "Repair immediate/tight interval: depth > 3.175 mm and W/Y < 15",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "REPAIR_DELAYED",
+      "severity": "engineering",
+      "srm_ref": "53-00-01 Table 102 (continued)",
+      "logic": {
+        "all": [
+          { "field": "depth_mm", "op": ">", "value": 3.175 },
+          { "field": "wy_ratio", "op": "<", "value": 15 },
+          { "field": "has_crack", "op": "==", "value": false }
+        ]
+      },
+      "actions": [
+        "Dent must be repaired permanently; repair may be deferred with tighter inspection interval.",
+        "1) Detailed Visual Inspection initially.",
+        "2) HFEC inspection within 500 cycles.",
+        "3) Detailed Visual Inspection every 500 cycles.",
+        "4) Permanent repair before 5,000 cycles."
+      ]
+    },
+
+    {
+      "rule_code": "B737-AD1-T102-007",
+      "title": "Repair immediate/tight interval: depth > 6.35 mm (all W/Y)",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "REPAIR_DELAYED",
+      "severity": "engineering",
+      "srm_ref": "53-00-01 Table 102 (continued)",
+      "logic": {
+        "all": [
+          { "field": "depth_mm", "op": ">", "value": 6.35 },
+          { "field": "has_crack", "op": "==", "value": false }
+        ]
+      },
+      "actions": [
+        "Dent must be repaired permanently; repair may be deferred with tighter inspection interval.",
+        "1) Detailed Visual Inspection initially.",
+        "2) HFEC inspection within 500 cycles.",
+        "3) Detailed Visual Inspection every 500 cycles.",
+        "4) Permanent repair before 5,000 cycles."
+      ]
+    },
+
+    {
+      "rule_code": "B737-AD1-FALLBACK-999",
+      "title": "Fallback: dent not covered by seeded Table 102 logic",
+      "damage_type": "dent",
+      "structure_area": "fuselage_skin",
+      "disposition": "ENGINEERING_REVIEW",
+      "severity": "engineering",
+      "srm_ref": "53-00-01 (manual review)",
+      "logic": {
+        "all": [
+          { "field": "damage_type", "op": "==", "value": "dent" }
+        ]
+      },
+      "actions": [
+        "No matching seeded rule found. Perform manual SRM lookup and engineering review."
+      ]
     }
   ]
 }

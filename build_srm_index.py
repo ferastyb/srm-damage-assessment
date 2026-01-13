@@ -121,6 +121,27 @@ def insert_pages(conn: sqlite3.Connection, doc_id: int, page_texts: List[str]) -
         [(doc_id, i + 1, t) for i, t in enumerate(page_texts)],
     )
     conn.commit()
+import re
+
+def normalize_pdf_text(s: str) -> str:
+    if not s:
+        return ""
+
+    # normalize common dash types
+    s = s.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-").replace("\u2013", "-").replace("\u2014", "-")
+
+    # fix hyphenated line breaks: "allow-\nable" -> "allowable"
+    s = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", s)
+
+    # join lines that are really just wrapping
+    s = re.sub(r"\n+", "\n", s)
+
+    # collapse whitespace (keep single newlines)
+    s = "\n".join(" ".join(line.split()) for line in s.splitlines())
+
+    # final collapse
+    s = re.sub(r"[ \t]+", " ", s).strip()
+    return s
 
 
 def rebuild_fts(conn: sqlite3.Connection) -> None:

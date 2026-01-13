@@ -24,6 +24,48 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import List, Optional
+def normalize_pdf_text(s: str) -> str:
+    """
+    Make PDF-extracted text searchable:
+    - normalize dash variants
+    - fix hyphenated line breaks
+    - add spaces between glued words (CamelCase, digit/alpha boundaries)
+    - keep readable spacing while collapsing junk whitespace
+    """
+    if not s:
+        return ""
+
+    # normalize dash types
+    s = s.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-").replace("\u2013", "-").replace("\u2014", "-")
+
+    # remove NULs
+    s = s.replace("\x00", " ")
+
+    # fix hyphenated line breaks: "allow-\nable" -> "allowable"
+    s = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", s)
+
+    # normalize newlines
+    s = re.sub(r"\r\n?", "\n", s)
+
+    # IMPORTANT: add spaces between:
+    # - lower->UPPER boundaries: "AllowableDamage" -> "Allowable Damage"
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+
+    # - letter->digit: "Table102" -> "Table 102"
+    s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
+
+    # - digit->letter: "102AL" -> "102 AL"
+    s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
+
+    # add space after punctuation when glued: "102:(" -> "102: ("
+    s = re.sub(r"([:;,\.\)])(\w)", r"\1 \2", s)
+
+    # collapse horizontal whitespace (keep newlines)
+    s = "\n".join(" ".join(line.split()) for line in s.splitlines())
+
+    # final trim
+    s = s.strip()
+    return s
 
 try:
     from PyPDF2 import PdfReader

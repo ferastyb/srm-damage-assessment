@@ -199,6 +199,34 @@ def open_sqlite_ro(db_path: Path) -> sqlite3.Connection:
 # Assessment logging (SQLite)
 # -----------------------------
 def ensure_assessments_schema(conn: sqlite3.Connection) -> None:
+    """Ensure assessments DB schema exists and perform lightweight migrations.
+
+    Streamlit Cloud persists the SQLite file between deploys, so older schemas can
+    lack newly added columns. SQLite supports ALTER TABLE ... ADD COLUMN, so we
+    migrate forward in-place.
+    """
+    expected = {
+        "created_utc": "TEXT NOT NULL",
+        "aircraft_type": "TEXT",
+        "structure_zone": "TEXT",
+        "side": "TEXT",
+        "sta": "TEXT",
+        "stringer": "TEXT",
+        "dent_diameter_mm": "REAL",
+        "dent_depth_mm": "REAL",
+        "crack_present": "INTEGER",
+        "notes": "TEXT",
+        "raw_description": "TEXT",
+        "disposition": "TEXT",
+        "severity": "TEXT",
+        "srm_reference": "TEXT",
+        "rule_id": "INTEGER",
+        "within_limits": "INTEGER",
+        "summary_text": "TEXT",
+        "reasoning_json": "TEXT",
+    }
+
+    # Base create (no-op if table already exists)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS assessments (
@@ -214,18 +242,28 @@ def ensure_assessments_schema(conn: sqlite3.Connection) -> None:
             crack_present INTEGER,
             notes TEXT,
             raw_description TEXT,
-
             disposition TEXT,
             severity TEXT,
             srm_reference TEXT,
             rule_id INTEGER,
             within_limits INTEGER,
-
             summary_text TEXT,
             reasoning_json TEXT
         );
         """
     )
+
+    # Forward-migrate missing columns (for existing DBs)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(assessments);").fetchall()}
+        for col, coltype in expected.items():
+            if col not in cols:
+                conn.execute(f"ALTER TABLE assessments ADD COLUMN {col} {coltype};")
+    except Exception:
+        # If something goes sideways, don't break the app at import time.
+        # We'll surface errors when logging.
+        pass
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_assessments_created ON assessments(created_utc);")
     conn.commit()
 

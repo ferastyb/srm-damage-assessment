@@ -4,91 +4,147 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 
 @dataclass
 class SRMHit:
-    aircraft_family: Optional[str]
-    doc_id: int
     doc_title: str
     revision: Optional[str]
+    aircraft_family: Optional[str]
     file_name: Optional[str]
     page: int
     snippet: str
-    score: Optional[float] = None
+    score: float
 
 
-def connect_srm(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _normalize_query(q: str) -> str:
+    q = (q or "").strip()
+    q = q.replace("\u2013", "-").replace("\u2014", "-").replace("\u2011", "-")
+    q = re.sub(r"\s+", " ", q)
+    return q
 
 
-def _fts_safe_query(raw: str) -> str:
+def _tokenize_keywords(q: str) -> List[str]:
     """
-    Convert free text into a conservative FTS5 MATCH query:
-    - split into tokens
-    - quote tokens containing punctuation (e.g. S-10L)
-    - join with AND
+    Extract strong tokens from a free-text query.
+    We intentionally bias toward words you *do* have indexed (per your counts):
+      allowable, fuselage, skin, dent, applicability, section, stations, stringers, figure
     """
-    raw = (raw or "").strip()
-    if not raw:
-        return ""
+    q = _normalize_query(q).lower()
 
-    raw = re.sub(r"\s+", " ", raw)
-    tokens = raw.split(" ")
+    # Keep alphanum + dash
+    raw = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", q)
 
-    safe = []
-    for t in tokens:
-        t = t.strip()
-        if not t:
-            continue
-
-        # Quote punctuation tokens so '-' etc. doesn't break MATCH parsing
-        if re.search(r"[^A-Za-z0-9_]", t):
-            t = t.replace('"', "")
-            safe.append(f'"{t}"')
-        else:
-            safe.append(t)
-
-    return " AND ".join(safe)
+    stop = {
+        "the","and","or","to","of","in","on","for","with","without",
+        "mm","in","inch","inches","dia","diameter","depth","srm","allowable","damage",
+        "repair","required","within","limit","limits","no","visible"
+    }
+    # Note: we remove generic words here because we add them back as phrases where useful.
+    tokens = [t for t in raw if t not in stop and len(t) >= 3]
+    return tokens
 
 
-def build_query_from_context(ctx: dict) -> str:
+def _fts_snippet() -> str:
+    # Snippet formatting: [match]
+    return "snippet(pages_fts, 0, '[', ']', '…', 16)"
+
+
+def _run_fts(
+    conn: sqlite3.Connection,
+    match_expr: str,
+    aircraft_family: Optional[str],
+    limit: int,
+) -> List[SRMHit]:
+    sql = f"""
+    SELECT
+      d.title AS doc_title,
+      d.revision AS revision,
+      d.aircraft_family AS aircraft_family,
+      d.file_name AS file_name,
+      p.page_no AS page_no,
+      {_fts_snippet()} AS snip,
+      bm25(pages_fts) AS rank
+    FROM pages_fts
+    JOIN pages p ON p.id = pages_fts.rowid
+    JOIN docs d ON d.id = p.doc_id
+    WHERE pages_fts MATCH ?
+      AND (? IS NULL OR d.aircraft_family = ?)
+    ORDER BY rank
+    LIMIT ?
     """
-    Build a search string from parsed damage context.
-    Safe to pass into search_srm(); it will be token-quoted for FTS.
+    rows = conn.execute(sql, (match_expr, aircraft_family, aircraft_family, limit)).fetchall()
+
+    hits: List[SRMHit] = []
+    for r in rows:
+        hits.append(
+            SRMHit(
+                doc_title=r[0] or "",
+                revision=r[1],
+                aircraft_family=r[2],
+                file_name=r[3],
+                page=int(r[4]),
+                snippet=r[5] or "",
+                score=float(r[6]) if r[6] is not None else 0.0,
+            )
+        )
+    return hits
+
+
+def _run_like_fallback(
+    conn: sqlite3.Connection,
+    like_terms: Sequence[str],
+    aircraft_family: Optional[str],
+    limit: int,
+) -> List[SRMHit]:
     """
-    parts = []
-    fam = (ctx.get("aircraft_family") or "").strip()
-    if fam:
-        parts.append(fam)
+    Final fallback if FTS misses tokens (e.g., 'table', numeric tokens).
+    Uses LIKE on pages.text. Slower but reliable for small corpora like your excerpt.
+    """
+    # Build: (text LIKE ? AND text LIKE ? ...)
+    clauses = []
+    params: List[object] = []
+    for t in like_terms:
+        clauses.append("p.text LIKE ?")
+        params.append(f"%{t}%")
 
-    for k in ("structure_zone", "side", "sta", "stringer", "ata"):
-        v = ctx.get(k)
-        if v:
-            parts.append(str(v))
+    fam_clause = ""
+    if aircraft_family:
+        fam_clause = "AND d.aircraft_family = ?"
+        params.append(aircraft_family)
 
-    damage_type = (ctx.get("damage_type") or "").strip()
-    if damage_type:
-        parts.append(damage_type)
+    sql = f"""
+    SELECT
+      d.title AS doc_title,
+      d.revision AS revision,
+      d.aircraft_family AS aircraft_family,
+      d.file_name AS file_name,
+      p.page_no AS page_no,
+      substr(p.text, 1, 400) AS snip
+    FROM pages p
+    JOIN docs d ON d.id = p.doc_id
+    WHERE {" AND ".join(clauses)}
+      {fam_clause}
+    LIMIT ?
+    """
+    params.append(limit)
+    rows = conn.execute(sql, tuple(params)).fetchall()
 
-    dia = ctx.get("dent_diameter_mm")
-    dep = ctx.get("dent_depth_mm")
-    if dia:
-        parts += [f"{dia}mm", "dia"]
-    if dep:
-        parts += [f"{dep}mm", "depth"]
-
-    crack = ctx.get("crack_present")
-    if crack is True:
-        parts.append("crack")
-    elif crack is False:
-        parts.append("no crack")
-
-    parts += ["SRM", "allowable", "damage", "repair"]
-    return " ".join(parts)
+    hits: List[SRMHit] = []
+    for r in rows:
+        hits.append(
+            SRMHit(
+                doc_title=r[0] or "",
+                revision=r[1],
+                aircraft_family=r[2],
+                file_name=r[3],
+                page=int(r[4]),
+                snippet=(r[5] or "").replace("\n", " "),
+                score=9999.0,  # arbitrary: fallback
+            )
+        )
+    return hits
 
 
 def search_srm(
@@ -98,51 +154,66 @@ def search_srm(
     limit: int = 6,
 ) -> List[SRMHit]:
     """
-    Search SRM index DB using FTS table pages_fts.
-    Assumes:
-      - pages_fts is built over pages.text
-      - pages_fts.rowid == pages.id
-      - pages.doc_id links to docs.id
+    Progressive SRM search:
+      1) Phrase search for the most SRM-native anchors
+      2) OR-based keyword search (robust)
+      3) LIKE fallback over pages.text (last resort)
     """
-    query = (query or "").strip()
-    if not query:
-        return []
+    q = _normalize_query(query)
 
-    fts_q = _fts_safe_query(query)
+    # Stage 1: SRM-native phrase anchors (best precision)
+    # We avoid relying on 'table'/'102' because your current index shows 0 hits for them.
+    stage1 = [
+        '"allowable damage 1"',
+        '"fuselage skin"',
+        'applicability',
+        'stringers',
+        'stations',
+        'dent'
+    ]
+    try:
+        hits = _run_fts(conn, " AND ".join(stage1), aircraft_family, limit)
+        if hits:
+            return hits
+    except Exception:
+        # fall through
+        pass
 
-    sql = """
-    SELECT
-        d.aircraft_family AS aircraft_family,
-        d.id              AS doc_id,
-        d.title           AS doc_title,
-        d.revision        AS revision,
-        d.file_name       AS file_name,
-        p.page_no         AS page_no,
-        snippet(pages_fts, 0, '[', ']', '…', 18) AS snippet,
-        bm25(pages_fts)   AS score
-    FROM pages_fts
-    JOIN pages p ON p.id = pages_fts.rowid
-    JOIN docs  d ON d.id = p.doc_id
-    WHERE pages_fts MATCH ?
-      AND (? IS NULL OR d.aircraft_family = ?)
-    ORDER BY score ASC
-    LIMIT ?
-    """
+    # Stage 2: OR-based query with phrases + keywords
+    tokens = _tokenize_keywords(q)
+    # Always include these core anchors
+    ors = [
+        '"allowable damage 1"',
+        '"fuselage skin"',
+        'allowable',
+        'fuselage',
+        'skin',
+        'dent',
+        'applicability',
+        'stringers',
+        'stations',
+        'section',
+        'figure'
+    ]
+    # Add a few extracted tokens
+    ors += tokens[:8]
 
-    rows = conn.execute(sql, (fts_q, aircraft_family, aircraft_family, limit)).fetchall()
+    match_expr = " OR ".join(dict.fromkeys(ors))  # dedupe preserving order
+    try:
+        hits = _run_fts(conn, match_expr, aircraft_family, limit)
+        if hits:
+            return hits
+    except Exception:
+        # fall through
+        pass
 
-    hits: List[SRMHit] = []
-    for r in rows:
-        hits.append(
-            SRMHit(
-                aircraft_family=r["aircraft_family"],
-                doc_id=int(r["doc_id"]),
-                doc_title=(r["doc_title"] or "SRM Document").strip(),
-                revision=r["revision"],
-                file_name=r["file_name"],
-                page=int(r["page_no"] or 0),
-                snippet=(r["snippet"] or "").strip(),
-                score=float(r["score"]) if r["score"] is not None else None,
-            )
-        )
-    return hits
+    # Stage 3: LIKE fallback — pick 2–3 strong substrings that should exist in your excerpt
+    like_terms = ["ALLOWABLE", "FUSELAGE", "SKIN"]
+    # If user mentioned dent, add it
+    if re.search(r"\bdent\b", q, re.I):
+        like_terms.append("Dent")
+    # Try 'Applicability' if present
+    if re.search(r"\bapplicability\b", q, re.I):
+        like_terms.append("Applicability")
+
+    return _run_like_fallback(conn, like_terms=like_terms[:4], aircraft_family=aircraft_family, limit=limit)

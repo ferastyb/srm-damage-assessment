@@ -4,16 +4,17 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 
 @dataclass
 class SRMHit:
+    aircraft_family: Optional[str]
+    doc_id: int
     doc_title: str
-    page: Optional[int]
+    page: int
     snippet: str
-    source: Optional[str] = None
-    url: Optional[str] = None
+    file_path: Optional[str] = None
     score: Optional[float] = None
 
 
@@ -23,58 +24,74 @@ def connect_srm(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
-def _find_fts_table(conn: sqlite3.Connection) -> Optional[str]:
+def _fts_safe_query(raw: str) -> str:
     """
-    Find the first FTS5 virtual table in the DB (if any).
+    Turn a free-text query into a safe FTS5 MATCH expression.
+    - splits into tokens
+    - quotes tokens containing punctuation (e.g. S-10L)
+    - joins with AND for precision
     """
-    rows = conn.execute(
-        "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%fts5%';"
-    ).fetchall()
-    for r in rows:
-        if r["name"]:
-            return r["name"]
-    return None
-
-
-def _fts_safe_query(q: str) -> str:
-    """
-    Convert raw text into a conservative FTS query:
-    - Tokenize
-    - Quote tokens that contain punctuation (e.g., S-10L)
-    - Join with AND
-    """
-    q = q.strip()
-    if not q:
+    raw = (raw or "").strip()
+    if not raw:
         return ""
 
-    # Normalize whitespace and remove common “units noise”
-    q = q.replace("mm", " ").replace("MM", " ")
-    q = re.sub(r"\s+", " ", q)
+    raw = re.sub(r"\s+", " ", raw)
+    tokens = raw.split(" ")
 
-    tokens = q.split(" ")
-    safe_tokens = []
+    safe = []
     for t in tokens:
         t = t.strip()
         if not t:
             continue
 
-        # FTS operators / punctuation can break parsing; quote anything non-alnum-ish
+        # quote anything with punctuation so MATCH parser doesn't treat '-' specially
         if re.search(r"[^A-Za-z0-9_]", t):
-            t = t.replace('"', "")  # remove quotes inside token
-            safe_tokens.append(f'"{t}"')
+            t = t.replace('"', "")
+            safe.append(f'"{t}"')
         else:
-            safe_tokens.append(t)
+            safe.append(t)
 
-    # Join as AND to narrow results
-    return " AND ".join(safe_tokens)
+    return " AND ".join(safe)
+
+
+def build_query_from_context(ctx: dict) -> str:
+    """
+    Optional helper: build a search string from parsed context.
+    ctx keys can be: aircraft_family, ata, structure_zone, side, sta, stringer, damage_type,
+                     dent_diameter_mm, dent_depth_mm, crack_present
+    """
+    parts = []
+    fam = (ctx.get("aircraft_family") or "").strip()
+    if fam:
+        parts.append(fam)
+
+    # prioritize structure / location tokens
+    for k in ("structure_zone", "side", "sta", "stringer", "ata"):
+        v = ctx.get(k)
+        if v:
+            parts.append(str(v))
+
+    damage_type = (ctx.get("damage_type") or "").strip()
+    if damage_type:
+        parts.append(damage_type)
+
+    dia = ctx.get("dent_diameter_mm")
+    dep = ctx.get("dent_depth_mm")
+    if dia:
+        parts.append(f"{dia}mm")
+        parts.append("dia")
+    if dep:
+        parts.append(f"{dep}mm")
+        parts.append("depth")
+
+    crack = ctx.get("crack_present")
+    if crack is True:
+        parts.append("crack")
+    elif crack is False:
+        parts.append("no crack")
+
+    parts += ["SRM", "allowable", "damage", "repair"]
+    return " ".join(parts)
 
 
 def search_srm(
@@ -84,151 +101,49 @@ def search_srm(
     limit: int = 6,
 ) -> List[SRMHit]:
     """
-    Search SRM index DB.
-
-    Expected DB shapes supported:
-      - FTS5 virtual table exists: we use MATCH with parameters.
-      - Otherwise, try a generic LIKE search on a table that looks like chunks/pages.
-
-    NOTE: This function is intentionally defensive so it won't explode if the DB schema changes.
+    Searches using pages_fts MATCH, joins to pages and docs.
+    Requires tables: pages_fts, pages, docs (as in your DB).
     """
     query = (query or "").strip()
     if not query:
         return []
 
-    fts_table = _find_fts_table(conn)
+    fts_q = _fts_safe_query(query)
 
-    # ---------- 1) FTS5 path ----------
-    if fts_table:
-        # Try to infer column names commonly used in our builder(s)
-        # We assume the FTS table has a "content" or "text" column, but FTS uses the table name directly in MATCH.
-        fts_q = _fts_safe_query(query)
+    # We assume pages_fts is an FTS5 table built over pages (external content).
+    # In that case, the FTS table rowid corresponds to pages.id.
+    # We'll join pages.id = pages_fts.rowid
+    sql = """
+    SELECT
+        d.aircraft_family AS aircraft_family,
+        d.id              AS doc_id,
+        d.title           AS doc_title,
+        p.page_no         AS page_no,
+        snippet(pages_fts, 0, '[', ']', '…', 18) AS snippet,
+        d.file_path       AS file_path,
+        bm25(pages_fts)   AS score
+    FROM pages_fts
+    JOIN pages p ON p.id = pages_fts.rowid
+    JOIN docs  d ON d.id = p.doc_id
+    WHERE pages_fts MATCH ?
+      AND (? IS NULL OR d.aircraft_family = ?)
+    ORDER BY score ASC
+    LIMIT ?
+    """
 
-        # Optional family filter if the FTS table has a family column
-        has_family = False
-        try:
-            cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({fts_table})").fetchall()]
-            has_family = "aircraft_family" in cols or "family" in cols
-        except Exception:
-            has_family = False
+    rows = conn.execute(sql, (fts_q, aircraft_family, aircraft_family, limit)).fetchall()
 
-        family_col = "aircraft_family" if has_family and "aircraft_family" in cols else ("family" if has_family else None)
-
-        # Build SQL with parameters only
-        if family_col and aircraft_family:
-            sql = f"""
-                SELECT
-                    COALESCE(doc_title, title, document, '') AS doc_title,
-                    COALESCE(page, page_no, NULL) AS page,
-                    COALESCE(snippet({fts_table}, 0, '[', ']', '…', 18), '') AS snippet,
-                    COALESCE(source, path, NULL) AS source,
-                    COALESCE(url, link, NULL) AS url,
-                    bm25({fts_table}) AS score
-                FROM {fts_table}
-                WHERE {fts_table} MATCH ?
-                  AND {family_col} = ?
-                ORDER BY score
-                LIMIT ?
-            """
-            rows = conn.execute(sql, (fts_q, aircraft_family, limit)).fetchall()
-        else:
-            sql = f"""
-                SELECT
-                    COALESCE(doc_title, title, document, '') AS doc_title,
-                    COALESCE(page, page_no, NULL) AS page,
-                    COALESCE(snippet({fts_table}, 0, '[', ']', '…', 18), '') AS snippet,
-                    COALESCE(source, path, NULL) AS source,
-                    COALESCE(url, link, NULL) AS url,
-                    bm25({fts_table}) AS score
-                FROM {fts_table}
-                WHERE {fts_table} MATCH ?
-                ORDER BY score
-                LIMIT ?
-            """
-            rows = conn.execute(sql, (fts_q, limit)).fetchall()
-
-        hits: List[SRMHit] = []
-        for r in rows:
-            hits.append(
-                SRMHit(
-                    doc_title=(r["doc_title"] or "").strip() or "SRM Document",
-                    page=r["page"],
-                    snippet=(r["snippet"] or "").strip(),
-                    source=r["source"],
-                    url=r["url"],
-                    score=float(r["score"]) if r["score"] is not None else None,
-                )
+    hits: List[SRMHit] = []
+    for r in rows:
+        hits.append(
+            SRMHit(
+                aircraft_family=r["aircraft_family"],
+                doc_id=int(r["doc_id"]),
+                doc_title=(r["doc_title"] or "SRM Document").strip(),
+                page=int(r["page_no"] or 0),
+                snippet=(r["snippet"] or "").strip(),
+                file_path=r["file_path"],
+                score=float(r["score"]) if r["score"] is not None else None,
             )
-        return hits
-
-    # ---------- 2) Fallback LIKE path ----------
-    # Try a few common table names and column patterns
-    candidates: List[Tuple[str, str]] = [
-        ("srm_chunks", "text"),
-        ("chunks", "text"),
-        ("srm_pages", "text"),
-        ("pages", "text"),
-    ]
-
-    for table, text_col in candidates:
-        if not _table_exists(conn, table):
-            continue
-
-        # check column exists
-        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-        if text_col not in cols:
-            continue
-
-        # Optional family filtering if column exists
-        fam_col = None
-        for c in ("aircraft_family", "family"):
-            if c in cols:
-                fam_col = c
-                break
-
-        like_q = f"%{query}%"
-
-        if fam_col and aircraft_family:
-            sql = f"""
-                SELECT
-                    COALESCE(doc_title, title, document, '') AS doc_title,
-                    COALESCE(page, page_no, NULL) AS page,
-                    substr({text_col}, 1, 320) AS snippet,
-                    COALESCE(source, path, NULL) AS source,
-                    COALESCE(url, link, NULL) AS url
-                FROM {table}
-                WHERE {text_col} LIKE ?
-                  AND {fam_col} = ?
-                LIMIT ?
-            """
-            rows = conn.execute(sql, (like_q, aircraft_family, limit)).fetchall()
-        else:
-            sql = f"""
-                SELECT
-                    COALESCE(doc_title, title, document, '') AS doc_title,
-                    COALESCE(page, page_no, NULL) AS page,
-                    substr({text_col}, 1, 320) AS snippet,
-                    COALESCE(source, path, NULL) AS source,
-                    COALESCE(url, link, NULL) AS url
-                FROM {table}
-                WHERE {text_col} LIKE ?
-                LIMIT ?
-            """
-            rows = conn.execute(sql, (like_q, limit)).fetchall()
-
-        hits: List[SRMHit] = []
-        for r in rows:
-            hits.append(
-                SRMHit(
-                    doc_title=(r["doc_title"] or "").strip() or "SRM Document",
-                    page=r["page"],
-                    snippet=(r["snippet"] or "").strip(),
-                    source=r["source"],
-                    url=r["url"],
-                    score=None,
-                )
-            )
-        return hits
-
-    # No recognized tables
-    return []
+        )
+    return hits

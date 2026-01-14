@@ -26,46 +26,92 @@ from pathlib import Path
 from typing import List, Optional
 def normalize_pdf_text(s: str) -> str:
     """
-    Make PDF-extracted text searchable:
+    Make PDF-extracted SRM text searchable:
     - normalize dash variants
     - fix hyphenated line breaks
-    - add spaces between glued words (CamelCase, digit/alpha boundaries)
-    - keep readable spacing while collapsing junk whitespace
+    - add spaces between glued tokens (CamelCase, ALLCAPS->lowercase, digit/alpha)
+    - split common SRM glued patterns (Greaterthan, Lessthan, Referto, etc.)
+    - split long ALLCAPS mega-words using a small SRM vocabulary
     """
     if not s:
         return ""
 
-    # normalize dash types
-    s = s.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-").replace("\u2013", "-").replace("\u2014", "-")
+    # Normalize dash types
+    s = (
+        s.replace("\u2010", "-")
+         .replace("\u2011", "-")
+         .replace("\u2012", "-")
+         .replace("\u2013", "-")
+         .replace("\u2014", "-")
+    )
 
-    # remove NULs
+    # Remove NULs
     s = s.replace("\x00", " ")
 
-    # fix hyphenated line breaks: "allow-\nable" -> "allowable"
+    # Fix hyphenated line breaks: "allow-\nable" -> "allowable"
     s = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", s)
 
-    # normalize newlines
+    # Normalize newlines
     s = re.sub(r"\r\n?", "\n", s)
 
-    # IMPORTANT: add spaces between:
-    # - lower->UPPER boundaries: "AllowableDamage" -> "Allowable Damage"
+    # --- SRM-specific deglue (high value) ---
+    # Greaterthan0.125 -> Greater than 0.125
+    s = re.sub(r"\b(Greater|Less)than\b", r"\1 than", s, flags=re.IGNORECASE)
+
+    # Referto51-40-05 -> Refer to 51-40-05
+    s = re.sub(r"\bReferto\b", "Refer to", s, flags=re.IGNORECASE)
+
+    # NOTE:Installa -> NOTE: Install a
+    s = re.sub(r"\bNOTE:\s*", "NOTE: ", s)
+
+    # repairifyou -> repair if you (common glued phrase)
+    s = re.sub(r"\brepairif\b", "repair if", s, flags=re.IGNORECASE)
+
+    # --- Generic spacing rules ---
+    # lower->UPPER boundaries: "AllowableDamage" -> "Allowable Damage"
     s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
 
-    # - letter->digit: "Table102" -> "Table 102"
-    s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
+    # ALLCAPS acronym -> lowercase: "SRMapproved" -> "SRM approved"
+    s = re.sub(r"([A-Z]{2,})([a-z])", r"\1 \2", s)
 
-    # - digit->letter: "102AL" -> "102 AL"
+    # Letter->digit and digit->letter: "Table102" -> "Table 102"
+    s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
     s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
 
-    # add space after punctuation when glued: "102:(" -> "102: ("
-    s = re.sub(r"([:;,\.\)])(\w)", r"\1 \2", s)
+    # Add a space after punctuation if glued: "mm)Lessthan" -> "mm) Lessthan"
+    s = re.sub(r"([:;,\.\)\]])(\w)", r"\1 \2", s)
 
-    # collapse horizontal whitespace (keep newlines)
+    # Split long ALLCAPS mega-words using a small SRM vocabulary
+    SRM_TERMS = [
+        "FUSELAGE", "ALLOWABLE", "DAMAGE", "LIMITS", "LIMIT", "SKIN", "DENT",
+        "REPAIR", "GENERAL", "INSPECTION", "CRACK", "STRINGER", "STRINGERS",
+        "STATION", "STATIONS", "FASTENER", "FASTENERS", "CORRECTIVE", "ACTION",
+        "PRESSURIZED", "CROWN", "AREA"
+    ]
+    SRM_TERMS = sorted(set(SRM_TERMS), key=len, reverse=True)
+
+    def split_caps_token(tok: str) -> str:
+        if not tok.isupper() or len(tok) < 18:
+            return tok
+        t = tok
+        for term in SRM_TERMS:
+            t = t.replace(term, term + " ")
+        return " ".join(t.split())
+
+    # Apply ALLCAPS splitting token-by-token (safe)
+    parts = []
+    for tok in re.split(r"(\s+)", s):
+        if tok and not tok.isspace():
+            parts.append(split_caps_token(tok))
+        else:
+            parts.append(tok)
+    s = "".join(parts)
+
+    # Collapse horizontal whitespace line-by-line (keep newlines)
     s = "\n".join(" ".join(line.split()) for line in s.splitlines())
 
-    # final trim
-    s = s.strip()
-    return s
+    return s.strip()
+
 
 try:
     from PyPDF2 import PdfReader

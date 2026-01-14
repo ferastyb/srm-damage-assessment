@@ -24,173 +24,11 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import List, Optional
-def normalize_pdf_text(s: str) -> str:
-    """
-    Make PDF-extracted SRM text searchable:
-    - normalize dash variants
-    - fix hyphenated line breaks
-    - add spaces between glued tokens (CamelCase, ALLCAPS->lowercase, digit/alpha)
-    - split common SRM glued patterns (Greaterthan, Lessthan, Referto, etc.)
-    - split long ALLCAPS mega-words using a small SRM vocabulary
-    """
-    if not s:
-        return ""
-
-    # Normalize dash types
-    s = (
-        s.replace("\u2010", "-")
-         .replace("\u2011", "-")
-         .replace("\u2012", "-")
-         .replace("\u2013", "-")
-         .replace("\u2014", "-")
-    )
-
-    # Remove NULs
-    s = s.replace("\x00", " ")
-
-    # Fix hyphenated line breaks: "allow-\nable" -> "allowable"
-    s = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", s)
-
-    # Normalize newlines
-    s = re.sub(r"\r\n?", "\n", s)
-
-    # --- SRM-specific deglue (high value) ---
-    # Greaterthan0.125 -> Greater than 0.125
-    s = re.sub(r"\b(Greater|Less)than\b", r"\1 than", s, flags=re.IGNORECASE)
-
-    # Referto51-40-05 -> Refer to 51-40-05
-    s = re.sub(r"\bReferto\b", "Refer to", s, flags=re.IGNORECASE)
-
-    # NOTE:Installa -> NOTE: Install a
-    s = re.sub(r"\bNOTE:\s*", "NOTE: ", s)
-
-    # repairifyou -> repair if you (common glued phrase)
-    s = re.sub(r"\brepairif\b", "repair if", s, flags=re.IGNORECASE)
-
-    # --- Generic spacing rules ---
-    # lower->UPPER boundaries: "AllowableDamage" -> "Allowable Damage"
-    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
-
-    # ALLCAPS acronym -> lowercase: "SRMapproved" -> "SRM approved"
-    s = re.sub(r"([A-Z]{2,})([a-z])", r"\1 \2", s)
-
-    # Letter->digit and digit->letter: "Table102" -> "Table 102"
-    s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
-    s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
-
-    # Add a space after punctuation if glued: "mm)Lessthan" -> "mm) Lessthan"
-    s = re.sub(r"([:;,\.\)\]])(\w)", r"\1 \2", s)
-
-    # Split long ALLCAPS mega-words using a small SRM vocabulary
-    SRM_TERMS = [
-        "FUSELAGE", "ALLOWABLE", "DAMAGE", "LIMITS", "LIMIT", "SKIN", "DENT",
-        "REPAIR", "GENERAL", "INSPECTION", "CRACK", "STRINGER", "STRINGERS",
-        "STATION", "STATIONS", "FASTENER", "FASTENERS", "CORRECTIVE", "ACTION",
-        "PRESSURIZED", "CROWN", "AREA"
-    ]
-    SRM_TERMS = sorted(set(SRM_TERMS), key=len, reverse=True)
-
-    def split_caps_token(tok: str) -> str:
-        if not tok.isupper() or len(tok) < 18:
-            return tok
-        t = tok
-        for term in SRM_TERMS:
-            t = t.replace(term, term + " ")
-        return " ".join(t.split())
-
-    # Apply ALLCAPS splitting token-by-token (safe)
-    parts = []
-    for tok in re.split(r"(\s+)", s):
-        if tok and not tok.isspace():
-            parts.append(split_caps_token(tok))
-        else:
-            parts.append(tok)
-    s = "".join(parts)
-
-    # Collapse horizontal whitespace line-by-line (keep newlines)
-    s = "\n".join(" ".join(line.split()) for line in s.splitlines())
-
-    return s.strip()
-
 
 try:
     from PyPDF2 import PdfReader
 except Exception as e:
     raise SystemExit("PyPDF2 not installed. Run: python3 -m pip install PyPDF2") from e
-
-
-# ----------------------------
-# Text normalization
-# ----------------------------
-
-_DASHES = {
-    "\u2010": "-",  # hyphen
-    "\u2011": "-",  # non-breaking hyphen
-    "\u2012": "-",  # figure dash
-    "\u2013": "-",  # en dash
-    "\u2014": "-",  # em dash
-    "\u2212": "-",  # minus
-}
-
-def normalize_pdf_text(s: str) -> str:
-    """
-    Normalize PDF extracted text so search works:
-    - fix missing spaces (common PyPDF2 issue)
-    - normalize dashes
-    - undo hyphenated line-breaks
-    - keep readable spacing for tokens (Table 102, Allowable Damage 1, 3.175 mm, etc.)
-    """
-    if not s:
-        return ""
-
-    # normalize dash variants
-    for k, v in _DASHES.items():
-        s = s.replace(k, v)
-
-    # strip nulls
-    s = s.replace("\x00", " ")
-
-    # standardize newlines
-    s = s.replace("\r\n", "\n").replace("\r", "\n")
-
-    # undo hyphenated line breaks: "allow-\nable" -> "allowable"
-    s = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", s)
-
-    # collapse multiple newlines
-    s = re.sub(r"\n{2,}", "\n", s)
-
-    # ---- FIX THE BIG ONE: missing spaces ----
-    # Insert space between lowerCaseUpperCase: "AllowableDamage" -> "Allowable Damage"
-    s = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", s)
-
-    # Insert spaces between letters and digits: "Table102" -> "Table 102", "53-00-01" stays okay
-    s = re.sub(r"(?<=[A-Za-z])(?=[0-9])", " ", s)
-    s = re.sub(r"(?<=[0-9])(?=[A-Za-z])", " ", s)
-
-    # Insert space after punctuation when missing: "NOTE:See" -> "NOTE: See"
-    s = re.sub(r"([:;,])(?=\S)", r"\1 ", s)
-
-    # Ensure "(Continued)Reference" -> "(Continued) Reference"
-    s = re.sub(r"(\))(?=[A-Za-z])", r"\1 ", s)
-
-    # Ensure "Stations360-540" -> "Stations 360-540" (already helped by letter->digit rule, but keep robust)
-    s = re.sub(r"\b(Stations|Station|STA|WL|Stringers|Stringer|BS|Frame|Frames)(?=\d)", r"\1 ", s, flags=re.I)
-
-    # Units spacing: "3.175mm" -> "3.175 mm", "0.125in." -> "0.125 in."
-    s = re.sub(r"(\d)(mm|cm|m|in\.?|ft\.?)\b", r"\1 \2", s, flags=re.I)
-
-    # compress whitespace inside each line
-    lines = []
-    for line in s.splitlines():
-        line = " ".join(line.split())
-        if line:
-            lines.append(line)
-
-    s = "\n".join(lines)
-
-    # final cleanup
-    s = re.sub(r"[ \t]{2,}", " ", s).strip()
-    return s
 
 
 # ----------------------------
@@ -222,6 +60,56 @@ def infer_revision(filename: str) -> str:
         return m.group(1)
     return "UNKNOWN"
 
+
+def normalize_pdf_text(s: str) -> str:
+    """
+    Make PDF text searchable (fix common extraction artifacts).
+
+    Key fix for your SRM excerpt:
+      "AllowableDamage1givestheallowabledamage..." -> becomes tokenizable.
+    """
+    if not s:
+        return ""
+
+    # Remove NULs
+    s = s.replace("\x00", " ")
+
+    # Normalize dash types
+    s = (
+        s.replace("\u2010", "-")
+         .replace("\u2011", "-")
+         .replace("\u2012", "-")
+         .replace("\u2013", "-")
+         .replace("\u2014", "-")
+    )
+
+    # Fix hyphenated line breaks: "allow-\nable" -> "allowable"
+    s = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", s)
+
+    # Ensure whitespace after punctuation when missing: "mm)from" -> "mm) from"
+    s = re.sub(r"([.,;:])(?=\w)", r"\1 ", s)
+
+    # Insert spaces between lower->upper (CamelCase): "AllowableDamage" -> "Allowable Damage"
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+
+    # Insert spaces between letters and digits: "Damage1" -> "Damage 1", "3.0in" -> "3.0 in"
+    s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
+    s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
+
+    # Some SRMs flatten spaces entirely in headings; add spacing around common separators
+    s = re.sub(r"([A-Za-z])(/)([A-Za-z])", r"\1 \2 \3", s)
+
+    # Normalize line endings and collapse excessive whitespace (keep paragraph breaks)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = "\n".join(" ".join(line.split()) for line in s.splitlines())
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+
+    return s
+
+
+# ----------------------------
+# DB helpers
+# ----------------------------
 
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
@@ -263,7 +151,6 @@ def insert_doc(conn: sqlite3.Connection, family: str, revision: str, title: str,
         """,
         (family, revision, title, file_name, file_hash),
     )
-    conn.commit()
     return int(cur.lastrowid)
 
 
@@ -276,23 +163,23 @@ def extract_pages_text(pdf_path: Path, max_pages: Optional[int] = None) -> List[
     out: List[str] = []
     for i in range(total):
         page = reader.pages[i]
-        raw = (page.extract_text() or "")
-        txt = normalize_pdf_text(raw)          # ✅ APPLY NORMALIZATION HERE
+        raw = page.extract_text() or ""
+        txt = normalize_pdf_text(raw)
         out.append(txt)
     return out
 
 
 def insert_pages(conn: sqlite3.Connection, doc_id: int, page_texts: List[str]) -> None:
+    # Store normalized text
     conn.executemany(
         "INSERT INTO pages (doc_id, page_no, text) VALUES (?, ?, ?)",
         [(doc_id, i + 1, t) for i, t in enumerate(page_texts)],
     )
-    conn.commit()
 
 
 def rebuild_fts(conn: sqlite3.Connection) -> None:
+    # Rebuild from pages content table (works with external-content FTS)
     conn.execute("INSERT INTO pages_fts(pages_fts) VALUES ('rebuild');")
-    conn.commit()
 
 
 def iter_pdfs(root: Path) -> List[Path]:
@@ -328,6 +215,7 @@ def main() -> None:
     conn = connect(out_db)
     try:
         init_schema(conn, schema)
+
         if args.wipe:
             wipe_db(conn)
 
@@ -345,13 +233,19 @@ def main() -> None:
                 continue
 
             print(f"Indexing {family} rev={revision}: {pdf.name}")
+
             texts = extract_pages_text(pdf, max_pages=args.max_pages)
 
+            # Transaction per doc for speed & safety
+            conn.execute("BEGIN;")
             doc_id = insert_doc(conn, family, revision, title, pdf.name, fhash)
             insert_pages(conn, doc_id, texts)
+            conn.commit()
+
             indexed += 1
 
         rebuild_fts(conn)
+        conn.commit()
 
         print("\n✅ SRM index build complete")
         print(f"DB: {out_db}")

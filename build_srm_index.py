@@ -96,6 +96,22 @@ def normalize_pdf_text(s: str) -> str:
     s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
     s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
 
+      # --- Unit-aware / connector deglue ---
+    # "0.0005and0.0045inch" -> "0.0005 and 0.0045 inch"
+    s = re.sub(r"(\d)\s*and\s*(\d)", r"\1 and \2", s, flags=re.IGNORECASE)
+
+    # Add space around 'and' when glued to numbers/words: "0.0005and0.0045" -> "0.0005 and 0.0045"
+    s = re.sub(r"(\d)and(\d)", r"\1 and \2", s, flags=re.IGNORECASE)
+    s = re.sub(r"([A-Za-z])and(\d)", r"\1 and \2", s, flags=re.IGNORECASE)
+    s = re.sub(r"(\d)and([A-Za-z])", r"\1 and \2", s, flags=re.IGNORECASE)
+
+    # "0.0045inch" -> "0.0045 inch", "3.175mm" -> "3.175 mm"
+    s = re.sub(r"(\d)\s*(inches|inch|in\.|mm|cm|m|ft|lb|lbs|psi)\b", r"\1 \2", s, flags=re.IGNORECASE)
+
+    # Between number ranges like "0.0005to0.0045" -> "0.0005 to 0.0045"
+    s = re.sub(r"(\d)to(\d)", r"\1 to \2", s, flags=re.IGNORECASE)
+
+
     # Some SRMs flatten spaces entirely in headings; add spacing around common separators
     s = re.sub(r"([A-Za-z])(/)([A-Za-z])", r"\1 \2 \3", s)
 

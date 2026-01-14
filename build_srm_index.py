@@ -99,6 +99,19 @@ def normalize_pdf_text(s: str) -> str:
     # Some SRMs flatten spaces entirely in headings; add spacing around common separators
     s = re.sub(r"([A-Za-z])(/)([A-Za-z])", r"\1 \2 \3", s)
 
+    # Greaterthan0.125 -> Greater than 0.125  (works even when followed by digits)
+    s = re.sub(r"\b(Greater|Less)than(?=\d|\b)", r"\1 than", s, flags=re.IGNORECASE)
+
+    # morethan3.0 -> more than 3.0
+    s = re.sub(r"\bmorethan(?=\d|\b)", "more than", s, flags=re.IGNORECASE)
+
+    # Referto51-40-05 -> Refer to 51-40-05  (works even when followed by digits)
+    s = re.sub(r"\bReferto(?=\d)", "Refer to ", s, flags=re.IGNORECASE)
+
+    # NOTE:Installa -> NOTE: Install a
+    s = re.sub(r"\bNOTE:\s*", "NOTE: ", s)
+
+
     # Normalize line endings and collapse excessive whitespace (keep paragraph breaks)
     s = s.replace("\r\n", "\n").replace("\r", "\n")
     s = "\n".join(" ".join(line.split()) for line in s.splitlines())

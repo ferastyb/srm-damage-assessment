@@ -61,134 +61,20 @@ def infer_revision(filename: str) -> str:
     return "UNKNOWN"
 
 
-import re
-
 def normalize_pdf_text(s: str) -> str:
     """
-    Make PDF-extracted SRM text searchable and more readable:
-    - normalize dash variants
-    - fix hyphenated line breaks
-    - add spaces between glued tokens (CamelCase, ALLCAPS->lowercase, digit/alpha)
-    - split common SRM glued patterns (Greaterthan, Lessthan, Referto, etc.)
-    - split long ALLCAPS mega-words using a small SRM vocabulary
-    - NEW: segment long all-lowercase glued runs using lightweight DP
+    Make PDF text searchable (fix common extraction artifacts).
+
+    Key fix for your SRM excerpt:
+      "AllowableDamage1givestheallowabledamage..." -> becomes tokenizable.
     """
     if not s:
         return ""
 
-    # ----------------------------
-    # Helpers: lightweight segmentation
-    # ----------------------------
-    try:
-        from wordfreq import zipf_frequency  # type: ignore
-    except Exception:
-        zipf_frequency = None  # fallback
+    # Remove NULs
+    s = s.replace("\x00", " ")
 
-    SRM_TERMS = [
-        # structure / aircraft
-        "fuselage","skin","crown","pressurized","stringer","stringers","frame","frames",
-        "station","stations","bulkhead","door","cutout","fastener","fasteners","hole","holes",
-        "lap","splice","bonded","unbonded","tear","strap",
-
-        # damage & actions
-        "allowable","damage","limits","limit","dent","dents","crack","cracks","scratch","scratches",
-        "nick","nicks","gouge","gouges","corrosion","wrinkle","wrinkles","buckle","buckles",
-        "repair","repaired","permanent","temporarily","inspection","visual","detailed","hfec",
-        "cycles","within","every","initially","replace","install","apply","remove","refer",
-        "approved","torque","interference","transition","shifted",
-
-        # common SRM glue words
-        "greater","less","than","more","from","between","and","or","not","permitted","must",
-        "use","you","do","if","the","a","an","to","of","in","on","for","as","is","are","be",
-        "shown","given","figure","table","note","continued","general","requirements",
-    ]
-    SRM_VOCAB = set(SRM_TERMS)
-
-    def _word_score(w: str) -> float:
-        """
-        Higher is better.
-        If wordfreq is installed, use Zipf frequency.
-        Otherwise, use a small SRM vocab + simple heuristics.
-        """
-        if not w:
-            return -999.0
-        if w in SRM_VOCAB:
-            return 6.0  # strong
-        if zipf_frequency is not None:
-            # zipf_frequency returns ~0-7+; unknown words near 0
-            return float(zipf_frequency(w, "en"))
-        # fallback heuristic: prefer shorter common-ish segments
-        if len(w) <= 2:
-            return 1.0
-        if len(w) <= 5:
-            return 2.0
-        if len(w) <= 9:
-            return 1.5
-        return 0.5
-
-    def segment_lowercase_run(token: str, max_word_len: int = 22) -> str:
-        """
-        Segment a long all-lowercase glued string using DP.
-        Only called for tokens that are very likely to be glued prose.
-        """
-        n = len(token)
-        if n < 18:
-            return token
-
-        # DP arrays
-        best_cost = [float("inf")] * (n + 1)
-        best_cost[0] = 0.0
-        back = [-1] * (n + 1)
-
-        # penalty for "unknown" chunks
-        UNKNOWN_PENALTY = 4.0
-
-        for i in range(1, n + 1):
-            j0 = max(0, i - max_word_len)
-            for j in range(j0, i):
-                w = token[j:i]
-                # skip ridiculous splits
-                if len(w) == 1:
-                    continue
-
-                score = _word_score(w)
-                # Convert to cost (lower is better)
-                # - encourage known/frequent words
-                # - penalize unknown long blobs
-                cost = best_cost[j]
-                if score <= 0.1 and w not in SRM_VOCAB:
-                    cost += UNKNOWN_PENALTY + (len(w) / 8.0)
-                else:
-                    cost += (7.0 - score)  # high score -> low cost
-
-                if cost < best_cost[i]:
-                    best_cost[i] = cost
-                    back[i] = j
-
-        # if no path found, return as-is
-        if back[n] == -1:
-            return token
-
-        # reconstruct
-        out = []
-        i = n
-        while i > 0:
-            j = back[i]
-            if j < 0:
-                return token
-            out.append(token[j:i])
-            i = j
-        out.reverse()
-
-        # light post-filter: avoid splitting into too many tiny bits
-        if len(out) > n / 3:
-            return token
-
-        return " ".join(out)
-
-    # ----------------------------
     # Normalize dash types
-    # ----------------------------
     s = (
         s.replace("\u2010", "-")
          .replace("\u2011", "-")
@@ -197,78 +83,28 @@ def normalize_pdf_text(s: str) -> str:
          .replace("\u2014", "-")
     )
 
-    # Remove NULs
-    s = s.replace("\x00", " ")
-
     # Fix hyphenated line breaks: "allow-\nable" -> "allowable"
     s = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", s)
 
-    # Normalize newlines
-    s = re.sub(r"\r\n?", "\n", s)
+    # Ensure whitespace after punctuation when missing: "mm)from" -> "mm) from"
+    s = re.sub(r"([.,;:])(?=\w)", r"\1 ", s)
 
-    # --- SRM-specific deglue (high value) ---
-    s = re.sub(r"\b(Greater|Less)than\b", r"\1 than", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bReferto\b", "Refer to", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bNOTE:\s*", "NOTE: ", s)
-    s = re.sub(r"\brepairif\b", "repair if", s, flags=re.IGNORECASE)
+    # Insert spaces between lower->upper (CamelCase): "AllowableDamage" -> "Allowable Damage"
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
 
-    # --- Generic spacing rules ---
-    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)           # AllowableDamage -> Allowable Damage
-    s = re.sub(r"([A-Z]{2,})([a-z])", r"\1 \2", s)       # SRMapproved -> SRM approved
-    s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)           # Table102 -> Table 102
-    s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)           # 102Table -> 102 Table
-    s = re.sub(r"([:;,\.\)\]])(\w)", r"\1 \2", s)        # mm)Lessthan -> mm) Lessthan
+    # Insert spaces between letters and digits: "Damage1" -> "Damage 1", "3.0in" -> "3.0 in"
+    s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
+    s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
 
-    # Split long ALLCAPS mega-words using a small SRM vocabulary
-    CAPS_TERMS = [
-        "FUSELAGE","ALLOWABLE","DAMAGE","LIMITS","LIMIT","SKIN","DENT",
-        "REPAIR","GENERAL","INSPECTION","CRACK","STRINGER","STRINGERS",
-        "STATION","STATIONS","FASTENER","FASTENERS","CORRECTIVE","ACTION",
-        "PRESSURIZED","CROWN","AREA","NOTE","CONTINUED"
-    ]
-    CAPS_TERMS = sorted(set(CAPS_TERMS), key=len, reverse=True)
+    # Some SRMs flatten spaces entirely in headings; add spacing around common separators
+    s = re.sub(r"([A-Za-z])(/)([A-Za-z])", r"\1 \2 \3", s)
 
-    def split_caps_token(tok: str) -> str:
-        if not tok.isupper() or len(tok) < 18:
-            return tok
-        t = tok
-        for term in CAPS_TERMS:
-            t = t.replace(term, term + " ")
-        return " ".join(t.split())
-
-    parts = []
-    for tok in re.split(r"(\s+)", s):
-        if tok and not tok.isspace():
-            parts.append(split_caps_token(tok))
-        else:
-            parts.append(tok)
-    s = "".join(parts)
-
-    # ----------------------------
-    # NEW: segment long all-lowercase runs token-by-token
-    # Only apply to tokens that are:
-    #  - all lowercase letters
-    #  - very long
-    #  - not already a known short word
-    # ----------------------------
-    def maybe_segment_token(tok: str) -> str:
-        if re.fullmatch(r"[a-z]{18,}", tok) and tok not in SRM_VOCAB:
-            return segment_lowercase_run(tok)
-        return tok
-
-    parts = []
-    for tok in re.split(r"(\s+)", s):
-        if tok and not tok.isspace():
-            parts.append(maybe_segment_token(tok))
-        else:
-            parts.append(tok)
-    s = "".join(parts)
-
-    # Collapse horizontal whitespace line-by-line (keep newlines)
+    # Normalize line endings and collapse excessive whitespace (keep paragraph breaks)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
     s = "\n".join(" ".join(line.split()) for line in s.splitlines())
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
 
-    return s.strip()
-
+    return s
 
 
 # ----------------------------

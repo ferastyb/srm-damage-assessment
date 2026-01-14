@@ -34,7 +34,7 @@ CREATE VIRTUAL TABLE pages_fts USING fts5(
   text,
   content='pages',
   content_rowid='id',
-  tokenize='unicode61 remove_diacritics 2 tokenchars "0123456789" separators "-_/."',
+  tokenize='unicode61 remove_diacritics 2 separators "-_/."',
   prefix='2 3 4'
 );
 

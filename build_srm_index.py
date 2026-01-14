@@ -96,6 +96,25 @@ def normalize_pdf_text(s: str) -> str:
     s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
     s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
 
+    # 0.0005and0.0045 -> 0.0005 and 0.0045
+    s = re.sub(r"(\d)and(\d)", r"\1 and \2", s, flags=re.IGNORECASE)
+
+    # 0.0005to0.0045 -> 0.0005 to 0.0045
+    s = re.sub(r"(\d)to(\d)", r"\1 to \2", s, flags=re.IGNORECASE)
+
+    # within500cycles -> within 500 cycles
+    s = re.sub(r"\bwithin(?=\d)", "within ", s, flags=re.IGNORECASE)
+
+    # every500cycles -> every 500 cycles
+    s = re.sub(r"\bevery(?=\d)", "every ", s, flags=re.IGNORECASE)
+
+    # before5000cycles -> before 5000 cycles
+    s = re.sub(r"\bbefore(?=\d)", "before ", s, flags=re.IGNORECASE)
+
+    # 3.175mm / 0.125in / 0.0045inch -> add space before unit
+    s = re.sub(r"(\d)\s*(mm|cm|m|in\.?|inch|inches|ft|psi|lb|lbs|cycles)\b", r"\1 \2", s, flags=re.IGNORECASE)
+
+
     # Some SRMs flatten spaces entirely in headings; add spacing around common separators
     s = re.sub(r"([A-Za-z])(/)([A-Za-z])", r"\1 \2 \3", s)
 

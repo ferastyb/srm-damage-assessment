@@ -61,6 +61,28 @@ def infer_revision(filename: str) -> str:
     return "UNKNOWN"
 
 
+# Common ALLCAPS “glued headings” that appear in SRMs
+_CAPS_TERMS = sorted(
+    {
+        "FUSELAGE", "ALLOWABLE", "DAMAGE", "LIMITS", "LIMIT", "SKIN", "DENT",
+        "REPAIR", "GENERAL", "INSPECTION", "CRACK", "STRINGER", "STRINGERS",
+        "STATION", "STATIONS", "FASTENER", "FASTENERS", "CORRECTIVE", "ACTION",
+        "PRESSURIZED", "CROWN", "AREA", "NOTE", "CONTINUED", "TABLE", "FIGURE",
+        "DOOR", "CUTOUT", "FRAME", "TEARSTRAP"
+    },
+    key=len,
+    reverse=True
+)
+
+
+def _split_caps_run(m: re.Match) -> str:
+    tok = m.group(0)
+    t = tok
+    for term in _CAPS_TERMS:
+        t = t.replace(term, term + " ")
+    return " ".join(t.split())
+
+
 def normalize_pdf_text(s: str) -> str:
     """
     Make PDF text searchable (fix common extraction artifacts).
@@ -96,8 +118,37 @@ def normalize_pdf_text(s: str) -> str:
     s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
     s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
 
-    # Some SRMs flatten spaces entirely in headings; add spacing around common separators
+    # Unit-aware spacing: "3.175mm" "0.125in" "0.0045inch"
+    s = re.sub(
+        r"(\d)\s*(mm|cm|m|in\.?|inch|inches|ft|psi|lb|lbs|cycles)\b",
+        r"\1 \2",
+        s,
+        flags=re.IGNORECASE,
+    )
+
+    # Common “glued words” patterns seen in SRM text
+    s = re.sub(r"(\d)and(\d)", r"\1 and \2", s, flags=re.IGNORECASE)
+    s = re.sub(r"(\d)to(\d)", r"\1 to \2", s, flags=re.IGNORECASE)
+
+    s = re.sub(r"\bwithin(?=\d)", "within ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bevery(?=\d)", "every ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bbefore(?=\d)", "before ", s, flags=re.IGNORECASE)
+
+    # Greaterthan0.125 -> Greater than 0.125
+    s = re.sub(r"\b(Greater|Less)than(?=\d|\b)", r"\1 than", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bmorethan(?=\d|\b)", "more than", s, flags=re.IGNORECASE)
+
+    # Referto51-40-05 -> Refer to 51-40-05
+    s = re.sub(r"\bReferto(?=\d)", "Refer to ", s, flags=re.IGNORECASE)
+
+    # Space around slash between words
     s = re.sub(r"([A-Za-z])(/)([A-Za-z])", r"\1 \2 \3", s)
+
+    # Split long ALLCAPS runs (headings etc.)
+    s = re.sub(r"[A-Z]{18,}", _split_caps_run, s)
+
+    # Normalize NOTE:
+    s = re.sub(r"\bNOTE:\s*", "NOTE: ", s)
 
     # Normalize line endings and collapse excessive whitespace (keep paragraph breaks)
     s = s.replace("\r\n", "\n").replace("\r", "\n")
@@ -162,15 +213,12 @@ def extract_pages_text(pdf_path: Path, max_pages: Optional[int] = None) -> List[
 
     out: List[str] = []
     for i in range(total):
-        page = reader.pages[i]
-        raw = page.extract_text() or ""
-        txt = normalize_pdf_text(raw)
-        out.append(txt)
+        raw = reader.pages[i].extract_text() or ""
+        out.append(normalize_pdf_text(raw))
     return out
 
 
 def insert_pages(conn: sqlite3.Connection, doc_id: int, page_texts: List[str]) -> None:
-    # Store normalized text
     conn.executemany(
         "INSERT INTO pages (doc_id, page_no, text) VALUES (?, ?, ?)",
         [(doc_id, i + 1, t) for i, t in enumerate(page_texts)],
@@ -178,7 +226,6 @@ def insert_pages(conn: sqlite3.Connection, doc_id: int, page_texts: List[str]) -
 
 
 def rebuild_fts(conn: sqlite3.Connection) -> None:
-    # Rebuild from pages content table (works with external-content FTS)
     conn.execute("INSERT INTO pages_fts(pages_fts) VALUES ('rebuild');")
 
 
@@ -236,7 +283,6 @@ def main() -> None:
 
             texts = extract_pages_text(pdf, max_pages=args.max_pages)
 
-            # Transaction per doc for speed & safety
             conn.execute("BEGIN;")
             doc_id = insert_doc(conn, family, revision, title, pdf.name, fhash)
             insert_pages(conn, doc_id, texts)

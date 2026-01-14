@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -61,12 +62,17 @@ def infer_revision(filename: str) -> str:
     return "UNKNOWN"
 
 
+# ----------------------------
+# Text normalization (+ lightweight segmentation)
+# ----------------------------
+
 def normalize_pdf_text(s: str) -> str:
     """
-    Make PDF text searchable (fix common extraction artifacts).
-
-    Key fix for your SRM excerpt:
-      "AllowableDamage1givestheallowabledamage..." -> becomes tokenizable.
+    Make PDF text searchable and more readable by undoing common extraction artifacts:
+    - lost spaces (CamelCase, alpha<->digit)
+    - glued SRM phrases (Greaterthan0.125, Referto51-40-05, within500cycles)
+    - ALLCAPS mega-words (FUSELAGEDENTALLOWABLEDAMAGELIMITS)
+    - long all-lowercase glued prose (Replaceanyfastenersinthedamagedarea...)
     """
     if not s:
         return ""
@@ -81,10 +87,14 @@ def normalize_pdf_text(s: str) -> str:
          .replace("\u2012", "-")
          .replace("\u2013", "-")
          .replace("\u2014", "-")
+         .replace("\u2212", "-")
     )
 
     # Fix hyphenated line breaks: "allow-\nable" -> "allowable"
     s = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", s)
+
+    # Normalize newlines
+    s = re.sub(r"\r\n?", "\n", s)
 
     # Ensure whitespace after punctuation when missing: "mm)from" -> "mm) from"
     s = re.sub(r"([.,;:])(?=\w)", r"\1 ", s)
@@ -92,69 +102,145 @@ def normalize_pdf_text(s: str) -> str:
     # Insert spaces between lower->upper (CamelCase): "AllowableDamage" -> "Allowable Damage"
     s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
 
-    # Insert spaces between letters and digits: "Damage1" -> "Damage 1", "3.0in" -> "3.0 in"
+    # Insert spaces between ALLCAPS acronym and lowercase: "SRMapproved" -> "SRM approved"
+    s = re.sub(r"([A-Z]{2,})([a-z])", r"\1 \2", s)
+
+    # Insert spaces between letters and digits: "Table102" -> "Table 102"
     s = re.sub(r"([A-Za-z])(\d)", r"\1 \2", s)
     s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
-
-    # 0.0005and0.0045 -> 0.0005 and 0.0045
-    s = re.sub(r"(\d)and(\d)", r"\1 and \2", s, flags=re.IGNORECASE)
-
-    # 0.0005to0.0045 -> 0.0005 to 0.0045
-    s = re.sub(r"(\d)to(\d)", r"\1 to \2", s, flags=re.IGNORECASE)
-
-    # within500cycles -> within 500 cycles
-    s = re.sub(r"\bwithin(?=\d)", "within ", s, flags=re.IGNORECASE)
-
-    # every500cycles -> every 500 cycles
-    s = re.sub(r"\bevery(?=\d)", "every ", s, flags=re.IGNORECASE)
-
-    # before5000cycles -> before 5000 cycles
-    s = re.sub(r"\bbefore(?=\d)", "before ", s, flags=re.IGNORECASE)
-
-    # 3.175mm / 0.125in / 0.0045inch -> add space before unit
-    s = re.sub(r"(\d)\s*(mm|cm|m|in\.?|inch|inches|ft|psi|lb|lbs|cycles)\b", r"\1 \2", s, flags=re.IGNORECASE)
-
 
     # Some SRMs flatten spaces entirely in headings; add spacing around common separators
     s = re.sub(r"([A-Za-z])(/)([A-Za-z])", r"\1 \2 \3", s)
 
-  CAPS_TERMS = [
-    "FUSELAGE","ALLOWABLE","DAMAGE","LIMITS","LIMIT","SKIN","DENT",
-    "REPAIR","GENERAL","INSPECTION","CRACK","STRINGER","STRINGERS",
-    "STATION","STATIONS","FASTENER","FASTENERS","CORRECTIVE","ACTION",
-    "PRESSURIZED","CROWN","AREA","NOTE","CONTINUED","TABLE","FIGURE"
-]
-CAPS_TERMS = sorted(set(CAPS_TERMS), key=len, reverse=True)
-
-def split_caps_run(m: re.Match) -> str:
-    tok = m.group(0)
-    t = tok
-    for term in CAPS_TERMS:
-        t = t.replace(term, term + " ")
-    return " ".join(t.split())
-
-    # Split any LONG ALLCAPS sequence even if followed by *[1] etc
-    s = re.sub(r"[A-Z]{18,}", split_caps_run, s)
-
-
-    # Greaterthan0.125 -> Greater than 0.125  (works even when followed by digits)
+    # --- SRM-specific deglue that must work even when followed by digits ---
+    # Greaterthan0.125 -> Greater than 0.125
     s = re.sub(r"\b(Greater|Less)than(?=\d|\b)", r"\1 than", s, flags=re.IGNORECASE)
-
     # morethan3.0 -> more than 3.0
     s = re.sub(r"\bmorethan(?=\d|\b)", "more than", s, flags=re.IGNORECASE)
-
-    # Referto51-40-05 -> Refer to 51-40-05  (works even when followed by digits)
+    # Referto51-40-05 -> Refer to 51-40-05
     s = re.sub(r"\bReferto(?=\d)", "Refer to ", s, flags=re.IGNORECASE)
-
     # NOTE:Installa -> NOTE: Install a
     s = re.sub(r"\bNOTE:\s*", "NOTE: ", s)
 
+    # --- Unit-aware / connector deglue ---
+    # 0.0005and0.0045 -> 0.0005 and 0.0045
+    s = re.sub(r"(\d)and(\d)", r"\1 and \2", s, flags=re.IGNORECASE)
+    # 0.0005to0.0045 -> 0.0005 to 0.0045
+    s = re.sub(r"(\d)to(\d)", r"\1 to \2", s, flags=re.IGNORECASE)
+    # within500cycles -> within 500 cycles
+    s = re.sub(r"\bwithin(?=\d)", "within ", s, flags=re.IGNORECASE)
+    # every500cycles -> every 500 cycles
+    s = re.sub(r"\bevery(?=\d)", "every ", s, flags=re.IGNORECASE)
+    # before5000cycles -> before 5000 cycles
+    s = re.sub(r"\bbefore(?=\d)", "before ", s, flags=re.IGNORECASE)
+    # 3.175mm / 0.125in / 0.0045inch -> add space before unit
+    s = re.sub(
+        r"(\d)\s*(mm|cm|m|in\.?|inch|inches|ft|psi|lb|lbs|cycles)\b",
+        r"\1 \2",
+        s,
+        flags=re.IGNORECASE,
+    )
 
-    # Normalize line endings and collapse excessive whitespace (keep paragraph breaks)
-    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    # ----------------------------
+    # Phase: split ALLCAPS mega-words even with punctuation around them
+    # ----------------------------
+    CAPS_TERMS = [
+        "FUSELAGE", "ALLOWABLE", "DAMAGE", "LIMITS", "LIMIT", "SKIN", "DENT",
+        "REPAIR", "GENERAL", "INSPECTION", "CRACK", "STRINGER", "STRINGERS",
+        "STATION", "STATIONS", "FASTENER", "FASTENERS", "CORRECTIVE", "ACTION",
+        "PRESSURIZED", "CROWN", "AREA", "NOTE", "CONTINUED", "TABLE", "FIGURE",
+    ]
+    CAPS_TERMS = sorted(set(CAPS_TERMS), key=len, reverse=True)
+
+    def split_caps_run(m: re.Match) -> str:
+        tok = m.group(0)
+        t = tok
+        for term in CAPS_TERMS:
+            t = t.replace(term, term + " ")
+        return " ".join(t.split())
+
+    # Replace long A–Z runs anywhere (punctuation like *[1] is outside this match)
+    s = re.sub(r"[A-Z]{18,}", split_caps_run, s)
+
+    # ----------------------------
+    # Phase: lightweight segmentation for long all-lowercase glued runs
+    # ----------------------------
+    SRM_VOCAB = {
+        # a small SRM-ish vocabulary (helps the DP)
+        "replace","any","fasteners","fastener","in","the","damaged","area","with","initial","type","drawing",
+        "shifted","transition","fit","hole","use","an","interference","between","and","inch","refer","to",
+        "general","note","install","a","approved","hex","drive","bolt","nut","damage","areas","along","aft",
+        "edge","of","door","cutout","as","given","figure","detail","that","is","common","frame","outer","chord",
+        "torque","if","surface","sealant","has","been","applied","again","adjacent","skin","skins","within","every",
+        "before","cycles","inspection","visual","detailed","hfec","dent","dents","crack","cracks","gouges","scratches",
+        "corrosion","remove","makesure","make","sure","measured","from","more","than","less",
+    }
+
+    def word_cost(w: str) -> float:
+        # Lower cost is better
+        if w in SRM_VOCAB:
+            return 0.3
+        # Prefer common-ish short words; penalize long unknown blobs
+        if len(w) <= 2:
+            return 1.2
+        if len(w) <= 4:
+            return 1.0
+        if len(w) <= 7:
+            return 1.6
+        if len(w) <= 12:
+            return 2.4
+        return 3.6 + (len(w) / 10.0)
+
+    def segment_lowercase_run(token: str, max_word_len: int = 22) -> str:
+        n = len(token)
+        if n < 18:
+            return token
+
+        best = [math.inf] * (n + 1)
+        back = [-1] * (n + 1)
+        best[0] = 0.0
+
+        for i in range(1, n + 1):
+            j0 = max(0, i - max_word_len)
+            for j in range(j0, i):
+                w = token[j:i]
+                if len(w) == 1:
+                    continue
+                c = best[j] + word_cost(w)
+                if c < best[i]:
+                    best[i] = c
+                    back[i] = j
+
+        if back[n] == -1:
+            return token
+
+        parts: List[str] = []
+        i = n
+        while i > 0:
+            j = back[i]
+            if j < 0:
+                return token
+            parts.append(token[j:i])
+            i = j
+        parts.reverse()
+
+        # avoid ridiculous over-splitting
+        if len(parts) > n / 3:
+            return token
+
+        return " ".join(parts)
+
+    def segment_lower_run(m: re.Match) -> str:
+        return segment_lowercase_run(m.group(0))
+
+    # Segment any long lowercase run inside the text
+    s = re.sub(r"[a-z]{18,}", segment_lower_run, s)
+
+    # ----------------------------
+    # Final tidy
+    # ----------------------------
     s = "\n".join(" ".join(line.split()) for line in s.splitlines())
     s = re.sub(r"\n{3,}", "\n\n", s).strip()
-
     return s
 
 
@@ -221,7 +307,6 @@ def extract_pages_text(pdf_path: Path, max_pages: Optional[int] = None) -> List[
 
 
 def insert_pages(conn: sqlite3.Connection, doc_id: int, page_texts: List[str]) -> None:
-    # Store normalized text
     conn.executemany(
         "INSERT INTO pages (doc_id, page_no, text) VALUES (?, ?, ?)",
         [(doc_id, i + 1, t) for i, t in enumerate(page_texts)],
@@ -229,7 +314,6 @@ def insert_pages(conn: sqlite3.Connection, doc_id: int, page_texts: List[str]) -
 
 
 def rebuild_fts(conn: sqlite3.Connection) -> None:
-    # Rebuild from pages content table (works with external-content FTS)
     conn.execute("INSERT INTO pages_fts(pages_fts) VALUES ('rebuild');")
 
 
@@ -284,10 +368,8 @@ def main() -> None:
                 continue
 
             print(f"Indexing {family} rev={revision}: {pdf.name}")
-
             texts = extract_pages_text(pdf, max_pages=args.max_pages)
 
-            # Transaction per doc for speed & safety
             conn.execute("BEGIN;")
             doc_id = insert_doc(conn, family, revision, title, pdf.name, fhash)
             insert_pages(conn, doc_id, texts)

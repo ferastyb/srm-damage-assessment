@@ -118,6 +118,25 @@ def normalize_pdf_text(s: str) -> str:
     # Some SRMs flatten spaces entirely in headings; add spacing around common separators
     s = re.sub(r"([A-Za-z])(/)([A-Za-z])", r"\1 \2 \3", s)
 
+  CAPS_TERMS = [
+    "FUSELAGE","ALLOWABLE","DAMAGE","LIMITS","LIMIT","SKIN","DENT",
+    "REPAIR","GENERAL","INSPECTION","CRACK","STRINGER","STRINGERS",
+    "STATION","STATIONS","FASTENER","FASTENERS","CORRECTIVE","ACTION",
+    "PRESSURIZED","CROWN","AREA","NOTE","CONTINUED","TABLE","FIGURE"
+]
+CAPS_TERMS = sorted(set(CAPS_TERMS), key=len, reverse=True)
+
+def split_caps_run(m: re.Match) -> str:
+    tok = m.group(0)
+    t = tok
+    for term in CAPS_TERMS:
+        t = t.replace(term, term + " ")
+    return " ".join(t.split())
+
+    # Split any LONG ALLCAPS sequence even if followed by *[1] etc
+    s = re.sub(r"[A-Z]{18,}", split_caps_run, s)
+
+
     # Greaterthan0.125 -> Greater than 0.125  (works even when followed by digits)
     s = re.sub(r"\b(Greater|Less)than(?=\d|\b)", r"\1 than", s, flags=re.IGNORECASE)
 

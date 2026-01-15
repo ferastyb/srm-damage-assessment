@@ -481,6 +481,9 @@ def log_assessment(
             elif not RULES_DB.exists():
                 rules_rows = [{"status": "skipped", "reason": "rules.db not found in deployment"}]
 
+        with st.expander("Rules engine debug", expanded=False):
+            st.json(rules_debug)
+
 
 
 # -----------------------------

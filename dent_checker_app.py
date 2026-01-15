@@ -865,7 +865,7 @@ with colB:
             elif not HAS_DAMAGE_MODELS:
                 dent_result = {"status": "skipped", "reason": "damage_models module not available"}
 
-                with st.expander("Dent model debug", expanded=False):
+            with st.expander("Dent model debug", expanded=False):
             st.json(dent_debug)
 
         # --------------

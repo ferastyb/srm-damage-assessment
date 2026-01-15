@@ -762,59 +762,75 @@ with colB:
         else:
             st.info("If you want SRM hits on Streamlit Cloud, commit srm_index.db to the repo (PDFs are not needed at runtime).")
 
-    if run:
-        # --------------
+           # --------------
         # Dent model
         # --------------
-        dent_result = make_dent_model(structured)
+        dent_result: Dict[str, Any] = {"status": "not_run"}
+        dent_debug: Dict[str, Any] = {}
 
-        # --------------
-        # Rules engine
-        # --------------
-        rules_rows = call_rules_engine(structured)
-
-        # --------------
-        # SRM Search
-        # --------------
-        srm_hits = call_srm_search(structured)
-
-        # --------------
-        # Render results
-        # --------------
-        st.markdown("### Dent model output")
-        if HAS_DAMAGE_MODELS and callable(build_plain_text_summary) and isinstance(dent_result, dict):
+        if HAS_DAMAGE_MODELS and structured.get("damage_type") == "DENT" and DentDamage is not None and assess_dent is not None:
             try:
-                # If your build_plain_text_summary expects different args, adjust in damage_models.py
-                summary = build_plain_text_summary(dent_result)  # type: ignore
-                st.code(summary, language="text")
-            except Exception:
-                st.json(dent_result)
+                # Build a rich "candidate" dict (we will FILTER before constructing)
+                candidate = {
+                    "aircraft_family": structured.get("aircraft_family") or "UNKNOWN",
+                    "aircraft_type": structured.get("aircraft_family") or "UNKNOWN",
+                    "aircraft": structured.get("aircraft_family") or "UNKNOWN",
+
+                    "structure": structured.get("structure") or "UNKNOWN",
+                    "area": structured.get("structure") or "UNKNOWN",
+                    "component": structured.get("structure") or "UNKNOWN",
+
+                    "zone": structured.get("structure_zone") or "UNKNOWN",
+                    "structure_zone": structured.get("structure_zone") or "UNKNOWN",
+                    "subzone": structured.get("structure_zone") or "UNKNOWN",
+
+                    "side": structured.get("side") or "ANY",
+                    "sta": structured.get("sta"),
+                    "wl": structured.get("wl"),
+                    "stringer": structured.get("stringer"),
+
+                    "diameter_mm": structured.get("dent_diameter_mm"),
+                    "dent_diameter_mm": structured.get("dent_diameter_mm"),
+                    "dia_mm": structured.get("dent_diameter_mm"),
+
+                    "depth_mm": structured.get("dent_depth_mm"),
+                    "dent_depth_mm": structured.get("dent_depth_mm"),
+                    "dep_mm": structured.get("dent_depth_mm"),
+
+                    "has_crack": structured.get("has_crack"),
+                    "crack": structured.get("has_crack"),
+
+                    "notes": structured.get("notes"),
+                }
+
+                # Introspect DentDamage accepted params
+                try:
+                    sig = inspect.signature(DentDamage)
+                    accepted = set(sig.parameters.keys())
+                except Exception:
+                    accepted = set()
+
+                # Filter candidate keys to ONLY what DentDamage accepts
+                filtered = {k: v for k, v in candidate.items() if k in accepted and v is not None}
+
+                dent_debug = {
+                    "DentDamage_signature": str(inspect.signature(DentDamage)) if DentDamage else None,
+                    "accepted_params": sorted(list(accepted)),
+                    "filtered_kwargs_used": filtered,
+                    "dropped_candidate_keys": sorted([k for k in candidate.keys() if k not in accepted]),
+                }
+
+                dent_obj = DentDamage(**filtered)  # <-- cannot send unsupported kwargs now
+                res = assess_dent(dent_obj)  # type: ignore
+                dent_result = res if isinstance(res, dict) else {"result": res}
+
+            except Exception as e:
+                dent_result = {"status": "error", "error": f"{e}", "debug": dent_debug}
         else:
-            st.json(dent_result)
-
-        st.markdown("### Rules matches")
-        st.json(rules_rows)
-
-        st.markdown("### SRM search hits (prototype)")
-        # If srm_hits is list-of-dict hits, show nicely; else raw json
-        if isinstance(srm_hits, list) and srm_hits and isinstance(srm_hits[0], dict) and "error" not in srm_hits[0] and "status" not in srm_hits[0]:
-            for hit in srm_hits[:8]:
-                title = hit.get("title") or hit.get("file_name") or "SRM hit"
-                meta = []
-                if hit.get("revision"):
-                    meta.append(f"Rev: {hit['revision']}")
-                if hit.get("aircraft_family"):
-                    meta.append(f"Aircraft: {hit['aircraft_family']}")
-                if hit.get("file_name"):
-                    meta.append(f"File: {hit['file_name']}")
-                if hit.get("page_no"):
-                    meta.append(f"Page: {hit['page_no']}")
-                st.markdown(f"**{title}**" + (f" ({' • '.join(meta)})" if meta else ""))
-
-                snippet = hit.get("snippet") or hit.get("text") or ""
-                st.code(deglue_text(str(snippet))[:1600], language="text")
-        else:
-            st.json(srm_hits)
+            if structured.get("damage_type") != "DENT":
+                dent_result = {"status": "skipped", "reason": "damage_type is not DENT"}
+            elif not HAS_DAMAGE_MODELS:
+                dent_result = {"status": "skipped", "reason": "damage_models module not available"}
 
         # --------------
         # Optional logging

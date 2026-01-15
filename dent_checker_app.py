@@ -1,24 +1,5 @@
 # dent_checker_app.py
 # Streamlit app: SRM Damage Assessment (Prototype)
-#
-# Key features:
-# - Fast “free-text” damage description parsing into structured fields
-# - Dent assessment using damage_models (if present)
-# - Rules evaluation using rules_engine (if present)
-# - SRM full-text search using srm_index.db (if present)
-# - SRM DB Debug panel (shows cwd + existence + size + sha256 prefix)
-# - Optional logging of assessments to SQLite (assessments.db) with lightweight schema migration
-#
-# Designed to be resilient on Streamlit Cloud:
-# - If a module/DB is missing, the app continues with warnings.
-#
-# Repo layout assumptions (root):
-# - dent_checker_app.py  (this file)
-# - damage_models.py     (your dent model + assess_dent, etc.)
-# - rules_engine.py      (rules evaluation)
-# - srm_search.py        (search SRM index)
-# - rules.db             (rules DB)
-# - srm_index.db         (SRM search DB)
 
 from __future__ import annotations
 
@@ -38,11 +19,7 @@ import streamlit as st
 # -----------------------------
 # Page config
 # -----------------------------
-st.set_page_config(
-    page_title="SRM Damage Assessment Tool",
-    layout="wide",
-)
-
+st.set_page_config(page_title="SRM Damage Assessment Tool", layout="wide")
 st.title("SRM Damage Assessment Tool (Prototype)")
 st.caption("Prototype to structure AOG damage descriptions, evaluate rules, and search SRM excerpts.")
 
@@ -129,6 +106,31 @@ def safe_json(obj: Any) -> str:
         return str(obj)
 
 
+def _safe_signature(obj: Any) -> Optional[str]:
+    try:
+        return str(inspect.signature(obj))
+    except Exception:
+        return None
+
+
+def _to_dict(obj: Any) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, list):
+        return [_to_dict(x) for x in obj]
+    # dataclasses / objects
+    try:
+        if hasattr(obj, "__dict__"):
+            return dict(obj.__dict__)
+    except Exception:
+        pass
+    return {"value": str(obj)}
+
+
 def _normalize_aircraft_family(text: str) -> str:
     t = (text or "").strip().upper().replace(" ", "")
     if t.startswith("B7"):
@@ -173,7 +175,6 @@ def _find_float_in(text: str, patterns: List[str]) -> Optional[float]:
 
 def parse_damage_description(desc: str) -> Dict[str, Any]:
     raw = desc.strip()
-
     out: Dict[str, Any] = {
         "raw": raw,
         "aircraft_family": None,
@@ -276,10 +277,36 @@ def parse_damage_description(desc: str) -> Dict[str, Any]:
     return out
 
 
+def build_rules_ctx(structured: Dict[str, Any]) -> Dict[str, Any]:
+    # Match rules_engine expectations (damage.type, damage.structure, location.zone)
+    return {
+        "aircraft_family": structured.get("aircraft_family"),
+        "raw": structured.get("raw"),
+        "damage": {
+            "type": structured.get("damage_type"),
+            "structure": structured.get("structure"),
+        },
+        "location": {
+            "zone": structured.get("structure_zone"),
+            "side": structured.get("side"),
+            "sta": structured.get("sta"),
+            "wl": structured.get("wl"),
+            "stringer": structured.get("stringer"),
+        },
+        "measurements": {
+            "dent": {
+                "diameter_mm": structured.get("dent_diameter_mm"),
+                "depth_mm": structured.get("dent_depth_mm"),
+            }
+        },
+        "flags": {"has_crack": structured.get("has_crack")},
+        "_flat": dict(structured),
+    }
+
+
 def init_assessments_db(db_path: Path) -> None:
     """
-    Creates table if needed and performs a lightweight migration to add missing columns.
-    This avoids Streamlit runtime errors when an older assessments.db already exists.
+    Create + lightweight migrate. Prevents Streamlit failures when an older assessments.db exists.
     """
     con = sqlite3.connect(str(db_path))
     try:
@@ -308,12 +335,9 @@ def init_assessments_db(db_path: Path) -> None:
             );
             """
         )
-
-        # ---- migration: add missing columns ----
         cols = {row[1] for row in con.execute("PRAGMA table_info(assessments)").fetchall()}
         if "rules_ctx_json" not in cols:
             con.execute("ALTER TABLE assessments ADD COLUMN rules_ctx_json TEXT;")
-
         con.commit()
     finally:
         con.close()
@@ -364,62 +388,26 @@ def log_assessment(
         con.close()
 
 
-def _safe_signature(obj: Any) -> Optional[str]:
+def list_rulesets(db_path: Path) -> List[Dict[str, Any]]:
+    if not db_path.exists():
+        return []
     try:
-        return str(inspect.signature(obj))
+        con = sqlite3.connect(str(db_path))
+        rows = con.execute(
+            "SELECT id, aircraft_family, revision, name FROM rule_sets ORDER BY aircraft_family, revision"
+        ).fetchall()
+        con.close()
+        return [{"id": r[0], "aircraft_family": r[1], "revision": r[2], "name": r[3]} for r in rows]
     except Exception:
-        return None
+        return []
 
 
-def _choose_crack_present(has_crack: Optional[bool]) -> tuple[bool, str]:
+def choose_crack_present(has_crack: Optional[bool]) -> tuple[bool, str]:
     if has_crack is True:
         return True, "from input: crack present"
     if has_crack is False:
         return False, "from input: no crack"
     return False, "defaulted False because crack status was Unknown"
-
-
-def _to_dict(obj: Any) -> Any:
-    if obj is None:
-        return None
-    if isinstance(obj, dict):
-        return obj
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, list):
-        return [_to_dict(x) for x in obj]
-    try:
-        if hasattr(obj, "__dict__"):
-            return dict(obj.__dict__)
-    except Exception:
-        pass
-    return {"value": str(obj)}
-
-
-def build_rules_ctx(structured: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "aircraft_family": structured.get("aircraft_family"),
-        "raw": structured.get("raw"),
-        "damage": {
-            "type": structured.get("damage_type"),
-            "structure": structured.get("structure"),
-        },
-        "location": {
-            "zone": structured.get("structure_zone"),
-            "side": structured.get("side"),
-            "sta": structured.get("sta"),
-            "wl": structured.get("wl"),
-            "stringer": structured.get("stringer"),
-        },
-        "measurements": {
-            "dent": {
-                "diameter_mm": structured.get("dent_diameter_mm"),
-                "depth_mm": structured.get("dent_depth_mm"),
-            }
-        },
-        "flags": {"has_crack": structured.get("has_crack")},
-        "_flat": dict(structured),
-    }
 
 
 # -----------------------------
@@ -448,6 +436,10 @@ with st.sidebar:
     st.write("srm_index.db exists:", SRM_DB.exists())
     st.write("assessments.db exists:", ASSESSMENTS_DB.exists())
 
+    if RULES_DB.exists():
+        with st.expander("rules.db contents (rule_sets)", expanded=False):
+            st.json(list_rulesets(RULES_DB))
+
     st.divider()
     st.caption("Tip: On Streamlit Cloud, only files committed to GitHub are available at runtime.")
 
@@ -459,7 +451,7 @@ colA, colB = st.columns([1.1, 0.9], gap="large")
 
 with colA:
     st.subheader("1) Paste damage description")
-    default_text = "B737 fuselage LH STA 123 S-10L skin dent 0.25mm dia 3.18mm depth no crack"
+    default_text = "B737, fuselage, LH side, STA 123, S-10L, skin dent 0.25mm dia, 3.18mm depth, no visible crack."
     desc = st.text_area(
         "Damage description",
         value=default_text,
@@ -500,6 +492,7 @@ with colA:
     with d3:
         crack_opt = st.selectbox("Crack present?", ["Unknown", "No", "Yes"], index=0)
 
+    # write back into structured dict
     structured["raw"] = desc.strip()
     structured["aircraft_family"] = _normalize_aircraft_family(aircraft_family) if aircraft_family else None
     structured["structure"] = structure.strip().upper() if structure else None
@@ -532,16 +525,17 @@ with colB:
         if SRM_DB.exists():
             st.write("srm_index.db size (bytes):", SRM_DB.stat().st_size)
             st.write("srm_index.db sha256 (prefix):", sha256_path(SRM_DB)[:16])
-        else:
-            st.info("If you want SRM hits on Streamlit Cloud, commit srm_index.db to the repo (PDFs are not needed at runtime).")
 
     if run:
+        # ----------------
+        # Dent model
+        # ----------------
         dent_result: Dict[str, Any] = {"status": "not_run"}
         dent_debug: Dict[str, Any] = {}
 
-        if HAS_DAMAGE_MODELS and structured.get("damage_type") == "DENT" and DentDamage is not None and assess_dent is not None:
+        if HAS_DAMAGE_MODELS and structured.get("damage_type") == "DENT" and DentDamage and assess_dent:
             try:
-                crack_present, crack_reason = _choose_crack_present(structured.get("has_crack"))
+                crack_present, crack_reason = choose_crack_present(structured.get("has_crack"))
 
                 candidate = {
                     "aircraft_type": structured.get("aircraft_family") or "UNKNOWN",
@@ -561,7 +555,7 @@ with colB:
 
                 dent_debug = {
                     "DentDamage_signature": _safe_signature(DentDamage),
-                    "accepted_params": sorted(accepted),
+                    "accepted_params": accepted,
                     "filtered_kwargs_used": filtered,
                     "crack_present_used": crack_present,
                     "crack_present_reason": crack_reason,
@@ -575,16 +569,18 @@ with colB:
         else:
             dent_result = {"status": "skipped"}
 
+        # ----------------
+        # Rules engine
+        # ----------------
         rules_ctx = build_rules_ctx(structured)
-        rules_rows: Any = []
-        rules_debug: Dict[str, Any] = {"selected": None, "signature": None, "module_exports": None, "ctx_sent": rules_ctx}
+        rules_rows: Any = {}
+        rules_debug: Dict[str, Any] = {"selected": None, "signature": None, "ctx_sent": rules_ctx}
 
         if HAS_RULES_ENGINE and RULES_DB.exists() and rules_engine is not None:
             try:
-                rules_debug["module_exports"] = [n for n in dir(rules_engine) if not n.startswith("_")]
-                if hasattr(rules_engine, "assess_damage") and callable(getattr(rules_engine, "assess_damage")):
-                    fn = getattr(rules_engine, "assess_damage")
-                    rules_debug["selected"] = "function:assess_damage"
+                fn = getattr(rules_engine, "assess_damage", None)
+                if callable(fn):
+                    rules_debug["selected"] = "assess_damage"
                     rules_debug["signature"] = _safe_signature(fn)
                     af = structured.get("aircraft_family") or "UNKNOWN"
                     rules_rows = fn(str(RULES_DB), af, rules_ctx, None)  # type: ignore
@@ -595,33 +591,54 @@ with colB:
         else:
             rules_rows = {"error": "rules.db missing or rules_engine unavailable"}
 
+        # ----------------
+        # SRM search
+        # ----------------
         srm_hits: Any = []
-        srm_debug: Dict[str, Any] = {"selected": None, "signature": None, "queries_tried": [], "query_used": None}
+        srm_debug: Dict[str, Any] = {"selected": None, "signature": None, "query_used": None}
 
         if HAS_SRM_SEARCH and SRM_DB.exists() and srm_search is not None:
             try:
                 search_fn = getattr(srm_search, "search_srm", None)
-                if search_fn is None:
-                    srm_hits = [{"error": "search_srm not found"}]
-                else:
-                    q = " ".join([
-                        structured.get("aircraft_family") or "",
-                        structured.get("structure") or "",
-                        structured.get("structure_zone") or "",
-                        structured.get("damage_type") or "",
-                        "allowable damage dent table 102",
-                    ]).strip()
+                if callable(search_fn):
+                    srm_debug["selected"] = "search_srm"
+                    srm_debug["signature"] = _safe_signature(search_fn)
+                    q = " ".join(
+                        [
+                            structured.get("aircraft_family") or "",
+                            structured.get("structure") or "",
+                            structured.get("structure_zone") or "",
+                            structured.get("damage_type") or "",
+                            "allowable damage dent table 102",
+                        ]
+                    ).strip()
+                    srm_debug["query_used"] = q
 
                     con = sqlite3.connect(str(SRM_DB))
                     try:
                         srm_hits = search_fn(con, q, aircraft_family=structured.get("aircraft_family"), limit=8)  # type: ignore
-                        srm_debug["query_used"] = q
                     finally:
                         con.close()
+                else:
+                    srm_hits = [{"error": "srm_search.search_srm not found"}]
             except Exception as e:
                 srm_hits = [{"error": str(e)}]
         else:
             srm_hits = [{"error": "srm_index.db missing or srm_search unavailable"}]
+
+        # ----------------
+        # Render
+        # ----------------
+        st.markdown("### SRM Reference (top hit)")
+        hits_list = _to_dict(srm_hits)
+        if isinstance(hits_list, list) and hits_list and isinstance(hits_list[0], dict) and "doc_title" in hits_list[0]:
+            top = hits_list[0]
+            st.success(
+                f"{top.get('doc_title','SRM')} • Page {top.get('page')} • File {top.get('file_name')} (Rev {top.get('revision')})"
+            )
+            st.code(str(top.get("snippet", ""))[:1200], language="text")
+        else:
+            st.info("No SRM hit available to quote.")
 
         st.markdown("### Dent model output")
         st.json(_to_dict(dent_result))
@@ -634,16 +651,21 @@ with colB:
             st.json(rules_debug)
 
         st.markdown("### SRM search hits (prototype)")
-        srm_hits_dict = _to_dict(srm_hits)
-        if isinstance(srm_hits_dict, list):
-            for hit in srm_hits_dict[:8]:
-                st.write(hit)
+        if isinstance(hits_list, list) and hits_list and isinstance(hits_list[0], dict):
+            for hit in hits_list[:8]:
+                title = hit.get("doc_title") or hit.get("file_name") or "SRM hit"
+                meta = f"Rev: {hit.get('revision')} • Aircraft: {hit.get('aircraft_family')} • File: {hit.get('file_name')} • Page: {hit.get('page')}"
+                st.markdown(f"**{title}** ({meta})")
+                st.code(str(hit.get("snippet", ""))[:1200], language="text")
         else:
-            st.json(srm_hits_dict)
+            st.json(hits_list)
 
         with st.expander("SRM search debug", expanded=False):
             st.json(srm_debug)
 
+        # ----------------
+        # Logging
+        # ----------------
         st.markdown("### Logging")
         log_it = st.checkbox("Log this assessment to SQLite (assessments.db)", value=True)
         if log_it:
@@ -657,6 +679,9 @@ with colB:
         st.info("Fill the structured fields if needed, then click **Run rules + SRM search + dent model**.")
 
 
+# -----------------------------
+# Assessment history
+# -----------------------------
 st.divider()
 st.subheader("Assessment history (SQLite)")
 

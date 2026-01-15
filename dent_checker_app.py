@@ -416,41 +416,71 @@ def log_assessment(
         con.close()
 
 
-# -----------------------------
-# Rules engine: robust call
-# -----------------------------
-def call_rules_engine(structured: Dict[str, Any]) -> Any:
-    if not (HAS_RULES_ENGINE and RULES_DB.exists()):
-        if not HAS_RULES_ENGINE:
-            return [{"status": "skipped", "reason": "rules_engine not available"}]
-        return [{"status": "skipped", "reason": "rules.db not found in deployment"}]
+        # --------------
+        # Rules engine
+        # --------------
+        rules_rows: Any = []
+        rules_debug: Dict[str, Any] = {"found_callables": []}
 
-    try:
-        # Try a few common function names and signatures (non-breaking)
-        for fn_name in ("evaluate_rules", "run_rules", "evaluate", "rules_for_damage"):
-            fn = getattr(rules_engine, fn_name, None)  # type: ignore
-            if callable(fn):
-                # signature attempts
-                try:
-                    return fn(str(RULES_DB), structured)  # (db_path, structured)
-                except TypeError:
-                    pass
-                try:
-                    return fn(structured, str(RULES_DB))  # (structured, db_path)
-                except TypeError:
-                    pass
-                try:
-                    return fn(structured)  # (structured)
-                except TypeError:
-                    pass
-                try:
-                    return fn(db_path=str(RULES_DB), structured=structured)  # kwargs
-                except TypeError:
-                    pass
+        if HAS_RULES_ENGINE and RULES_DB.exists() and rules_engine is not None:
+            try:
+                rules_debug["module_dir"] = [n for n in dir(rules_engine) if not n.startswith("_")]
 
-        return [{"error": "rules_engine has no compatible rules function (evaluate_rules/run_rules/evaluate)"}]
-    except Exception as e:
-        return [{"error": str(e)}]
+                # 1) Try common function names
+                for name in ["evaluate_rules", "run_rules", "evaluate", "match_rules", "assess", "assess_rules"]:
+                    if hasattr(rules_engine, name) and callable(getattr(rules_engine, name)):
+                        fn = getattr(rules_engine, name)
+                        rules_debug["selected"] = f"function:{name}"
+                        rules_debug["signature"] = str(inspect.signature(fn))
+                        try:
+                            rules_rows = fn(str(RULES_DB), structured)  # type: ignore
+                        except TypeError:
+                            # try keyword forms
+                            try:
+                                rules_rows = fn(db_path=str(RULES_DB), structured=structured)  # type: ignore
+                            except TypeError:
+                                rules_rows = fn(structured, db_path=str(RULES_DB))  # type: ignore
+                        break
+
+                # 2) Try common class patterns
+                if rules_rows == []:
+                    for cls_name in ["RulesEngine", "RuleEngine", "Engine"]:
+                        if hasattr(rules_engine, cls_name):
+                            CLS = getattr(rules_engine, cls_name)
+                            if callable(CLS):
+                                eng = None
+                                try:
+                                    eng = CLS(str(RULES_DB))
+                                except TypeError:
+                                    try:
+                                        eng = CLS(db_path=str(RULES_DB))
+                                    except TypeError:
+                                        eng = CLS()
+                                # try methods
+                                for m in ["evaluate", "run", "run_rules", "evaluate_rules", "match"]:
+                                    if hasattr(eng, m) and callable(getattr(eng, m)):
+                                        meth = getattr(eng, m)
+                                        rules_debug["selected"] = f"class:{cls_name}.{m}"
+                                        rules_debug["signature"] = str(inspect.signature(meth))
+                                        try:
+                                            rules_rows = meth(structured)
+                                        except TypeError:
+                                            rules_rows = meth(str(RULES_DB), structured)
+                                        break
+                            if rules_rows != []:
+                                break
+
+                if rules_rows == []:
+                    rules_rows = [{"error": "Could not find a callable rules function/class method in rules_engine"}]
+
+            except Exception as e:
+                rules_rows = [{"error": str(e)}]
+        else:
+            if not HAS_RULES_ENGINE:
+                rules_rows = [{"status": "skipped", "reason": "rules_engine not available"}]
+            elif not RULES_DB.exists():
+                rules_rows = [{"status": "skipped", "reason": "rules.db not found in deployment"}]
+
 
 
 # -----------------------------

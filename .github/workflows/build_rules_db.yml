@@ -1,0 +1,51 @@
+name: Build rules.db from seed
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "seed_rules.py"
+      - "rules_schema.sql"
+      - "rules_seed_b737_allowable_damage_1.json"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build rules.db using seed_rules.py
+        run: |
+          python seed_rules.py \
+            --db rules.db \
+            --schema rules_schema.sql \
+            --seed rules_seed_b737_allowable_damage_1.json \
+            --upsert-ruleset \
+            --wipe-ruleset-rules
+
+      - name: Show rule_sets for verification
+        run: |
+          python - <<'PY'
+          import sqlite3
+          con = sqlite3.connect("rules.db")
+          rows = con.execute("SELECT id, aircraft_family, revision, name FROM rule_sets").fetchall()
+          print("rule_sets:", rows)
+          con.close()
+          PY
+
+      - name: Commit updated rules.db
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add rules.db
+          git diff --cached --quiet || git commit -m "Update rules.db (B737 seed)"
+          git push

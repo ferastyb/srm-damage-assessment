@@ -1,137 +1,22 @@
 {
   "rule_set": {
-    "name": "B737 SRM Allowable Damage 1 (Fuselage Skin) — Demo",
+    "name": "B737 Allowable Damage (Demo Seed)",
     "aircraft_family": "B737",
-    "revision": "DEMO-AD1-01",
-    "effective_date": null,
-    "source": "Outdated SRM sample provided by user (demo only)"
+    "revision": "DEMO",
+    "effective_date": "2026-01-15",
+    "source": "SRM excerpt: SRM_53-00-01_ADL1 (Allowable Damage 1 / Table 102)"
   },
   "rules": [
     {
       "enabled": 1,
-      "priority": 1000,
-      "damage_type": "dent",
-      "structure": "fuselage",
-      "structure_zone": "skin",
-      "zone_detail": "Applicability exclusion gate",
-      "side": "ANY",
-      "sta_min": 360,
-      "sta_max": 540,
-      "wl_min": null,
-      "wl_max": null,
-      "stringer_min": -24,
-      "stringer_max": 24,
-      "pressurized": 1,
-      "material": null,
-      "conditions": {
-        "all": [
-          { "field": "section", "op": "==", "value": 43 },
-          { "field": "distance_from_cutout_in", "op": ">", "value": 3.0 }
-        ]
-      },
-      "limits": {},
-      "actions": {
-        "disposition": "ENGINEERING_REVIEW",
-        "message": "Allowable Damage 1 not applicable in this excluded region (Section 43 door/cutout area).",
-        "recommendations": [
-          "Refer to SRM for alternate allowable damage/repair or engineering evaluation.",
-          "Confirm exact geometry vs SRM exclusions (STA/stringer/cutout proximity)."
-        ]
-      },
-      "srm_ref": "53-00-01 Allowable Damage 1 Applicability (example gate for Section 43)",
-      "severity": "engineering",
-      "notes": "Gate rule: if this matches, do not apply Table 102 allowables.",
-      "source_page": "Sample screenshots"
-    },
-
-    {
-      "enabled": 1,
-      "priority": 1000,
-      "damage_type": "dent",
-      "structure": "fuselage",
-      "structure_zone": "skin",
-      "zone_detail": "Applicability exclusion gate",
-      "side": "ANY",
-      "sta_min": 727,
-      "sta_max": 887,
-      "wl_min": null,
-      "wl_max": null,
-      "stringer_min": -23,
-      "stringer_max": 23,
-      "pressurized": 1,
-      "material": null,
-      "conditions": {
-        "all": [
-          { "field": "section", "op": "==", "value": 46 },
-          { "field": "distance_from_cutout_in", "op": ">", "value": 3.0 }
-        ]
-      },
-      "limits": {},
-      "actions": {
-        "disposition": "ENGINEERING_REVIEW",
-        "message": "Allowable Damage 1 not applicable in this excluded region (Section 46 door/cutout area).",
-        "recommendations": [
-          "Refer to SRM for alternate allowable damage/repair or engineering evaluation.",
-          "Confirm exact geometry vs SRM exclusions (STA/stringer/cutout proximity)."
-        ]
-      },
-      "srm_ref": "53-00-01 Allowable Damage 1 Applicability (example gate for Section 46)",
-      "severity": "engineering",
-      "notes": "Gate rule: if this matches, do not apply Table 102 allowables.",
-      "source_page": "Sample screenshots"
-    },
-
-    {
-      "enabled": 1,
-      "priority": 900,
-      "damage_type": "dent",
-      "structure": "fuselage",
-      "structure_zone": "skin",
-      "zone_detail": "Precondition gate (Table 102 eligibility)",
-      "side": "ANY",
-      "sta_min": null,
-      "sta_max": null,
-      "wl_min": null,
-      "wl_max": null,
-      "stringer_min": null,
-      "stringer_max": null,
-      "pressurized": 1,
-      "material": null,
-      "conditions": {
-        "any": [
-          { "field": "has_crack", "op": "==", "value": true },
-          { "field": "has_sharp_crease", "op": "==", "value": true },
-          { "field": "has_hole_or_puncture", "op": "==", "value": true },
-          { "field": "has_substructure_damage", "op": "==", "value": true },
-          { "field": "is_common_to_stringer_or_frame", "op": "==", "value": true },
-          { "field": "distance_from_skin_splice_in", "op": "<", "value": 3.0 }
-        ]
-      },
-      "limits": {},
-      "actions": {
-        "disposition": "ENGINEERING_REVIEW",
-        "message": "Dent is not eligible for Table 102 allowables (preconditions not met).",
-        "recommendations": [
-          "Use the SRM procedure applicable to cracks/creases/punctures/substructure damage if present.",
-          "If uncertain, escalate for engineering review."
-        ]
-      },
-      "srm_ref": "53-00-01 Table 102 notes/requirements (demo mapping)",
-      "severity": "engineering",
-      "notes": "If any of these conditions are true, do not apply the allowable table.",
-      "source_page": "Sample screenshots"
-    },
-
-    {
-      "enabled": 1,
       "priority": 100,
-      "damage_type": "dent",
-      "structure": "fuselage",
-      "structure_zone": "skin",
-      "zone_detail": "Table 102 — Row A",
+      "damage_type": "DENT",
+      "structure": "FUSELAGE",
+      "structure_zone": "SKIN",
+      "zone_detail": "PRESSURIZED",
       "side": "ANY",
-      "sta_min": null,
-      "sta_max": null,
+      "sta_min": 0,
+      "sta_max": 99999,
       "wl_min": null,
       "wl_max": null,
       "stringer_min": null,
@@ -139,188 +24,22 @@
       "pressurized": 1,
       "material": null,
       "conditions": {
-        "all": [
-          { "field": "has_crack", "op": "==", "value": false },
-          { "field": "depth_mm", "op": "<", "value": 3.175 },
-          { "field": "wy_ratio", "op": ">", "value": 30 }
-        ]
+        "crack_present": false
       },
       "limits": {
-        "max_depth_mm": 3.175,
-        "wy_ratio_min": 30
+        "notes": "Prototype placeholder limits until Table 102 logic is encoded"
       },
-      "actions": {
-        "disposition": "ALLOWABLE",
-        "message": "Allowable damage — no repair required.",
-        "recommendations": [
-          "Record damage and monitor per operator policy.",
-          "Verify no crack and smooth dent."
-        ]
-      },
-      "srm_ref": "53-00-01 Table 102 (Depth < 0.125 in, W/Y > 30) — demo",
-      "severity": "info",
-      "notes": null,
-      "source_page": "Sample screenshots"
-    },
-
-    {
-      "enabled": 1,
-      "priority": 100,
-      "damage_type": "dent",
-      "structure": "fuselage",
-      "structure_zone": "skin",
-      "zone_detail": "Table 102 — Row B",
-      "side": "ANY",
-      "sta_min": null,
-      "sta_max": null,
-      "wl_min": null,
-      "wl_max": null,
-      "stringer_min": null,
-      "stringer_max": null,
-      "pressurized": 1,
-      "material": null,
-      "conditions": {
-        "all": [
-          { "field": "has_crack", "op": "==", "value": false },
-          { "field": "depth_mm", "op": "<", "value": 3.175 },
-          { "field": "wy_ratio", "op": ">", "value": 15 },
-          { "field": "wy_ratio", "op": "<", "value": 30 }
-        ]
-      },
-      "limits": {
-        "max_depth_mm": 3.175,
-        "wy_ratio_band": [15, 30]
-      },
-      "actions": {
-        "disposition": "REPAIR_DELAYED",
-        "message": "Repair required but may be deferred with inspections (banded W/Y).",
-        "recommendations": [
-          "Initial Detailed Visual Inspection (DVI).",
-          "HFEC within 5,000 cycles.",
-          "Repeat DVI every 4,000 cycles.",
-          "Permanent repair before 10,000 cycles."
-        ]
-      },
-      "srm_ref": "53-00-01 Table 102 (Depth < 0.125 in, 15 < W/Y < 30) — demo",
-      "severity": "warning",
-      "notes": null,
-      "source_page": "Sample screenshots"
-    },
-
-    {
-      "enabled": 1,
-      "priority": 100,
-      "damage_type": "dent",
-      "structure": "fuselage",
-      "structure_zone": "skin",
-      "zone_detail": "Table 102 — Row C",
-      "side": "ANY",
-      "sta_min": null,
-      "sta_max": null,
-      "wl_min": null,
-      "wl_max": null,
-      "stringer_min": null,
-      "stringer_max": null,
-      "pressurized": 1,
-      "material": null,
-      "conditions": {
-        "all": [
-          { "field": "has_crack", "op": "==", "value": false },
-          { "field": "depth_mm", "op": "<", "value": 3.175 },
-          { "field": "wy_ratio", "op": "<=", "value": 15 }
-        ]
-      },
-      "limits": {
-        "max_depth_mm": 3.175,
-        "wy_ratio_max": 15
-      },
-      "actions": {
-        "disposition": "REPAIR_DELAYED",
-        "message": "Repair required but may be deferred with inspections (low W/Y).",
-        "recommendations": [
-          "Initial Detailed Visual Inspection (DVI).",
-          "HFEC within 5,000 cycles.",
-          "Repeat DVI every 4,000 cycles.",
-          "Permanent repair before 10,000 cycles."
-        ]
-      },
-      "srm_ref": "53-00-01 Table 102 (Depth < 0.125 in, W/Y ≤ 15) — demo",
-      "severity": "warning",
-      "notes": null,
-      "source_page": "Sample screenshots"
-    },
-
-    {
-      "enabled": 1,
-      "priority": 90,
-      "damage_type": "dent",
-      "structure": "fuselage",
-      "structure_zone": "skin",
-      "zone_detail": "Table 102 — Deep dent band",
-      "side": "ANY",
-      "sta_min": null,
-      "sta_max": null,
-      "wl_min": null,
-      "wl_max": null,
-      "stringer_min": null,
-      "stringer_max": null,
-      "pressurized": 1,
-      "material": null,
-      "conditions": {
-        "all": [
-          { "field": "has_crack", "op": "==", "value": false },
-          { "field": "depth_mm", "op": ">", "value": 6.35 }
-        ]
-      },
-      "limits": {
-        "depth_mm_min": 6.35
-      },
-      "actions": {
-        "disposition": "REPAIR_DELAYED",
-        "message": "Deep dent — tighter inspection interval; repair required.",
-        "recommendations": [
-          "Initial Detailed Visual Inspection (DVI).",
-          "HFEC within 500 cycles.",
-          "Repeat DVI every 500 cycles.",
-          "Permanent repair before 5,000 cycles."
-        ]
-      },
-      "srm_ref": "53-00-01 Table 102 (Depth > 0.25 in) — demo",
-      "severity": "engineering",
-      "notes": null,
-      "source_page": "Sample screenshots"
-    },
-
-    {
-      "enabled": 1,
-      "priority": 1,
-      "damage_type": "dent",
-      "structure": "fuselage",
-      "structure_zone": "skin",
-      "zone_detail": "Fallback",
-      "side": "ANY",
-      "sta_min": null,
-      "sta_max": null,
-      "wl_min": null,
-      "wl_max": null,
-      "stringer_min": null,
-      "stringer_max": null,
-      "pressurized": null,
-      "material": null,
-      "conditions": {},
-      "limits": {},
       "actions": {
         "disposition": "ENGINEERING_REVIEW",
-        "message": "No seeded SRM rule matched. Manual SRM lookup required.",
-        "recommendations": [
-          "Use SRM search panel to locate the correct paragraph/table.",
-          "Escalate to engineering if uncertain."
+        "next_steps": [
+          "Confirm dent meets Table 102 entry requirements (smooth, no crease/gouge/crack, distance from cutouts/splices, not common to stringer/frame/fastener).",
+          "Use Table 102 to classify depth and W/Y ratio and follow corrective action."
         ]
       },
-      "srm_ref": "SRM manual review required",
+      "srm_ref": "SRM 53-00-01 ALLOWABLE DAMAGE 1 — Table 102 (Fuselage Dent Allowable Damage Limits)",
       "severity": "engineering",
-      "notes": "Low priority fallback ensures some disposition is returned.",
-      "source_page": null
+      "notes": "Demo seed rule. Replace with real parameterized rules extracted from SRM tables.",
+      "source_page": "Table 102 (pages ~6–7 in excerpt PDF)"
     }
   ]
 }

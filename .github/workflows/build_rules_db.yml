@@ -32,7 +32,7 @@ jobs:
             --upsert-ruleset \
             --wipe-ruleset-rules
 
-      - name: Show rule_sets for verification
+      - name: Verify rule_sets
         run: |
           python - <<'PY'
           import sqlite3

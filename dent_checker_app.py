@@ -825,7 +825,7 @@ def _compose_final_statement(structured: Dict[str, Any], srm_meta: Dict[str, Opt
     page = srm_meta.get("page") or "?"
 
     # Required output format:
-    # [damage type] is found [within/out of] [aircraft type] SRM [ATA chapter-ATAsubchapter, Allowable Damage #, table #], [page #]
+    # [damage type] is found [within limits of/out of] [aircraft type] SRM [ATA chapter-ATAsubchapter, Allowable Damage #, table #], [page #]
     return f"{dmg} is found {limit_status} {ac} SRM {ata}, Allowable Damage {ad_no}, Table {table_no}, page {page}."
 
 

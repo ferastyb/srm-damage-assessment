@@ -826,7 +826,7 @@ def _compose_final_statement(structured: Dict[str, Any], srm_meta: Dict[str, Opt
 
     # Required output format:
     # [damage type] is found [within/out of] [aircraft type] in accordance with SRM [ATA chapter-ATAsubchapter, Allowable Damage #, table #], [page #]
-    return f"{dmg} is found {limit_status} {ac} SRM {ata}, Allowable Damage {ad_no}, Table {table_no}, page {page}."
+    return f"{dmg} is found {limit_status} {ac} in accordance with SRM {ata}, Allowable Damage {ad_no}, Table {table_no}, page {page}."
 
 
 # -----------------------------

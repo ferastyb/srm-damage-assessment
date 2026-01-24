@@ -132,9 +132,6 @@ def _find_float_in(text: str, patterns: List[str]) -> Optional[float]:
 
 
 def parse_damage_description(desc: str) -> Dict[str, Any]:
-    """
-    Parse single-line AOG description to structured fields.
-    """
     raw = desc.strip()
 
     out: Dict[str, Any] = {
@@ -297,7 +294,7 @@ def _compute_wy_ratio(dia_mm: Optional[float], depth_mm: Optional[float]) -> Opt
 
 
 # -----------------------------
-# Assessments DB: migrations (fixes "no such column frame", etc.)
+# Assessments DB: migrations
 # -----------------------------
 def _get_table_columns(con: sqlite3.Connection, table: str) -> List[str]:
     rows = con.execute(f"PRAGMA table_info({table})").fetchall()
@@ -312,12 +309,6 @@ def _ensure_columns(con: sqlite3.Connection, table: str, columns: Dict[str, str]
 
 
 def init_assessments_db(db_path: Path) -> None:
-    """
-    Create table if needed AND migrate older Streamlit Cloud DBs forward.
-    This prevents:
-      - Failed to log assessment: table assessments has no column named frame
-      - Could not read assessments.db: no such column: frame
-    """
     con = sqlite3.connect(str(db_path))
     try:
         con.execute(
@@ -345,19 +336,15 @@ def init_assessments_db(db_path: Path) -> None:
             """
         )
 
-        # Migrate forward (add columns safely if missing)
         _ensure_columns(
             con,
             "assessments",
             {
-                # Newer location fields
                 "frame": "INTEGER",
-                # Future-proof debug blobs (won't break older DBs)
                 "rules_ctx_json": "TEXT",
                 "rules_debug_json": "TEXT",
                 "srm_debug_json": "TEXT",
                 "dent_debug_json": "TEXT",
-                # Optional final statement
                 "final_statement": "TEXT",
             },
         )
@@ -413,7 +400,6 @@ def log_assessment(
             "final_statement": final_statement,
         }
 
-        # Only insert columns that exist in THIS DB (handles older deployments)
         payload = {k: v for k, v in payload.items() if k in cols}
 
         colnames = ", ".join(payload.keys())
@@ -454,7 +440,6 @@ def read_recent_assessments(db_path: Path, limit: int = 25) -> List[Dict[str, An
         out: List[Dict[str, Any]] = []
         for r in rows:
             d = dict(zip(selected, r))
-            # friendly crack display
             if "has_crack" in d:
                 if d["has_crack"] is None:
                     d["crack"] = None
@@ -659,6 +644,8 @@ with colB:
         if isinstance(srm_hits, list) and srm_hits and isinstance(srm_hits[0], dict) and "error" not in srm_hits[0]:
             best_hit = _pick_best_table102_hit(srm_hits)
 
+        has_srm_reference = best_hit is not None
+
         if best_hit:
             st.markdown("### SRM Reference (top hit)")
             doc = best_hit.get("doc_title") or best_hit.get("title") or best_hit.get("file_name") or "SRM"
@@ -782,61 +769,26 @@ with colB:
                 rules_rows = [{"status": "skipped", "reason": "rules.db not found in deployment"}]
 
         # ----------------
-        # SRM-based "why" proof (ratio + thresholds) for dent
+        # Final statement (SRM-backed only)
         # ----------------
         st.markdown("### Final statement (SRM-based)")
-        final_lines: List[str] = []
-
-        if best_hit:
-            doc = best_hit.get("doc_title") or best_hit.get("file_name") or "SRM"
-            rev = best_hit.get("revision") or "UNKNOWN"
-            file_name = best_hit.get("file_name") or ""
-            printed = best_hit.get("printed_page")
-            pdf_page = best_hit.get("pdf_page") or best_hit.get("page")
-            page_str = f"Printed page {printed}" if printed else f"PDF page {pdf_page}"
-
-            snippet = str(best_hit.get("snippet") or "")
-            mtab = re.search(r"\bTable\s*(\d+)\b", snippet, flags=re.IGNORECASE)
-            table_no = mtab.group(1) if mtab else "102"
-
-            final_lines.append(
-                f"Reference: **{doc}** (Rev {rev}) • **Table {table_no}** • **{page_str}** • File `{file_name}`"
-            )
-        else:
-            final_lines.append("Reference: (no SRM hit available)")
 
         dtype = structured.get("damage_type")
         dia = structured.get("dent_diameter_mm")
         dep = structured.get("dent_depth_mm")
         ratio = _compute_wy_ratio(dia, dep)
 
-        if dtype == "DENT":
-            # Hard override: if crack is present, never within limits.
-            if structured.get("has_crack") is True:
-                final_lines.append("Decision: **OUT OF LIMITS** (crack present ⇒ not allowable / engineering review).")
-            else:
-                if dep is None:
-                    final_lines.append("Decision: **ENGINEERING REVIEW** (missing dent depth).")
-                else:
-                    if dep > 6.35:
-                        final_lines.append("Decision: **OUT OF LIMITS** (Depth > 6.35 mm (0.25 in) ⇒ not allowable).")
-                    elif dep > 3.175:
-                        if ratio is None:
-                            final_lines.append("Decision: **ENGINEERING REVIEW** (cannot compute W/Y ratio).")
-                        else:
-                            if ratio >= 30.0:
-                                final_lines.append(
-                                    "Decision: **WITHIN LIMITS** (Depth in (3.175..6.35] mm and W/Y ≥ 30)."
-                                )
-                            else:
-                                final_lines.append(
-                                    "Decision: **OUT OF LIMITS** (Depth in (3.175..6.35] mm and W/Y < 30)."
-                                )
-                    else:
-                        final_lines.append("Decision: **WITHIN LIMITS** (Depth ≤ 3.175 mm (0.125 in) prototype band).")
+        final_lines: List[str] = []
 
+        if not has_srm_reference:
+            # IMPORTANT: Do not generate an assessable decision if no SRM reference exists.
+            fam = structured.get("aircraft_family") or "UNKNOWN"
+            final_lines.append("Reference: (no SRM hit available in library)")
+            final_lines.append(
+                f"Decision: **NO ASSESSMENT GENERATED** (no SRM reference available for aircraft `{fam}` in the current library/index)."
+            )
             final_lines.append("")
-            final_lines.append("Proof / calculations:")
+            final_lines.append("Informational only (not an assessment):")
             if dia is None or dep is None:
                 final_lines.append(f"- W (diameter): {dia} mm")
                 final_lines.append(f"- Y (depth): {dep} mm")
@@ -844,20 +796,77 @@ with colB:
             else:
                 final_lines.append(f"- W (diameter): {dia:.2f} mm")
                 final_lines.append(f"- Y (depth): {dep:.2f} mm")
-                if ratio is not None:
-                    final_lines.append(f"- W/Y = {dia:.2f} / {dep:.2f} = **{ratio:.2f}**")
-                else:
-                    final_lines.append("- W/Y: (cannot compute)")
-
+                final_lines.append(f"- W/Y = {dia:.2f} / {dep:.2f} = **{ratio:.2f}**" if ratio is not None else "- W/Y: (cannot compute)")
             if structured.get("has_crack") is True:
-                final_lines.append("- Crack: **present** (override to OUT OF LIMITS)")
+                final_lines.append("- Crack: **present**")
             elif structured.get("has_crack") is False:
                 final_lines.append("- Crack: not reported")
             else:
-                final_lines.append("- Crack: unknown (treated as not present for prototype dent math)")
+                final_lines.append("- Crack: unknown")
 
         else:
-            final_lines.append(f"Decision: **ENGINEERING REVIEW** (damage_type={dtype}; prototype dent logic not applied).")
+            # SRM reference exists -> allowed to produce SRM-backed decision
+            doc = best_hit.get("doc_title") or best_hit.get("file_name") or "SRM"
+            rev = best_hit.get("revision") or "UNKNOWN"
+            file_name = best_hit.get("file_name") or ""
+            printed = best_hit.get("printed_page")
+            pdf_page = best_hit.get("pdf_page") or best_hit.get("page")
+            page_str = f"Printed page {printed}" if printed else f"PDF page {pdf_page}"
+            snippet = str(best_hit.get("snippet") or "")
+            mtab = re.search(r"\bTable\s*(\d+)\b", snippet, flags=re.IGNORECASE)
+            table_no = mtab.group(1) if mtab else "102"
+
+            final_lines.append(
+                f"Reference: **{doc}** (Rev {rev}) • **Table {table_no}** • **{page_str}** • File `{file_name}`"
+            )
+
+            if dtype == "DENT":
+                # Hard override: if crack is present, never within limits.
+                if structured.get("has_crack") is True:
+                    final_lines.append("Decision: **OUT OF LIMITS** (crack present ⇒ not allowable / engineering review).")
+                else:
+                    if dep is None:
+                        final_lines.append("Decision: **ENGINEERING REVIEW** (missing dent depth).")
+                    else:
+                        if dep > 6.35:
+                            final_lines.append("Decision: **OUT OF LIMITS** (Depth > 6.35 mm (0.25 in) ⇒ not allowable).")
+                        elif dep > 3.175:
+                            if ratio is None:
+                                final_lines.append("Decision: **ENGINEERING REVIEW** (cannot compute W/Y ratio).")
+                            else:
+                                if ratio >= 30.0:
+                                    final_lines.append(
+                                        "Decision: **WITHIN LIMITS** (Depth in (3.175..6.35] mm and W/Y ≥ 30)."
+                                    )
+                                else:
+                                    final_lines.append(
+                                        "Decision: **OUT OF LIMITS** (Depth in (3.175..6.35] mm and W/Y < 30)."
+                                    )
+                        else:
+                            final_lines.append("Decision: **WITHIN LIMITS** (Depth ≤ 3.175 mm (0.125 in) prototype band).")
+
+                final_lines.append("")
+                final_lines.append("Proof / calculations:")
+                if dia is None or dep is None:
+                    final_lines.append(f"- W (diameter): {dia} mm")
+                    final_lines.append(f"- Y (depth): {dep} mm")
+                    final_lines.append("- W/Y: (cannot compute)")
+                else:
+                    final_lines.append(f"- W (diameter): {dia:.2f} mm")
+                    final_lines.append(f"- Y (depth): {dep:.2f} mm")
+                    if ratio is not None:
+                        final_lines.append(f"- W/Y = {dia:.2f} / {dep:.2f} = **{ratio:.2f}**")
+                    else:
+                        final_lines.append("- W/Y: (cannot compute)")
+
+                if structured.get("has_crack") is True:
+                    final_lines.append("- Crack: **present** (override to OUT OF LIMITS)")
+                elif structured.get("has_crack") is False:
+                    final_lines.append("- Crack: not reported")
+                else:
+                    final_lines.append("- Crack: unknown (treated as not present for prototype dent math)")
+            else:
+                final_lines.append(f"Decision: **NO SRM ASSESSMENT GENERATED** (damage_type={dtype}; SRM dent logic not applied).")
 
         final_statement_text = "\n".join(final_lines)
         st.write(final_statement_text)

@@ -1,16 +1,5 @@
 # dent_checker_app.py
 # Streamlit app: SRM Damage Assessment (Prototype)
-#
-# Updated:
-# - Renamed aircraft "family" -> aircraft "type" (UI + structured dict + ctx)
-# - SRM search now uses staged fallbacks:
-#     1) full query + aircraft filter
-#     2) full query + no aircraft filter (handles family mismatch in DB)
-#     3) core query + aircraft filter
-#     4) core query + no aircraft filter
-# - Final statement now refuses to generate an assessment if no SRM reference exists for the selected aircraft type.
-# - Logging + assessments schema supports aircraft_type and frame.
-# - Keeps your existing UI layout.
 
 from __future__ import annotations
 
@@ -23,7 +12,7 @@ import sqlite3
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -102,7 +91,6 @@ def safe_json(obj: Any) -> str:
 
 def _normalize_aircraft_type(text: str) -> str:
     t = (text or "").strip().upper().replace(" ", "")
-    # Common patterns you used
     if t.startswith("B7"):
         return t
     if t.startswith("A3") or t.startswith("A32"):
@@ -144,9 +132,6 @@ def _find_float_in(text: str, patterns: List[str]) -> Optional[float]:
 
 
 def parse_damage_description(desc: str) -> Dict[str, Any]:
-    """
-    Parse single-line AOG description to structured fields.
-    """
     raw = desc.strip()
 
     out: Dict[str, Any] = {
@@ -291,11 +276,6 @@ def parse_damage_description(desc: str) -> Dict[str, Any]:
 
 
 def init_assessments_db(db_path: Path) -> None:
-    """
-    Create assessments table if it doesn't exist.
-    NOTE: If you already have an older table (without 'frame' or aircraft_type),
-          this function won't alter it. In that case, delete assessments.db or migrate.
-    """
     con = sqlite3.connect(str(db_path))
     try:
         con.execute(
@@ -336,7 +316,6 @@ def log_assessment(
     result: Any,
 ) -> None:
     init_assessments_db(db_path)
-
     con = sqlite3.connect(str(db_path))
     try:
         con.execute(
@@ -389,6 +368,53 @@ def _compute_wy_ratio(dia_mm: Optional[float], depth_mm: Optional[float]) -> Opt
     if depth_mm <= 0:
         return None
     return dia_mm / depth_mm
+
+
+def _hit_aircraft_type(hit: Dict[str, Any]) -> Optional[str]:
+    # srm_search uses aircraft_family in docs table; keep tolerant
+    t = hit.get("aircraft_family") or hit.get("aircraft_type")
+    if t is None:
+        return None
+    return _normalize_aircraft_type(str(t))
+
+
+def _build_query_variants(structured: Dict[str, Any]) -> List[str]:
+    """
+    IMPORTANT: include the exact "known-good" query style you used earlier.
+    """
+    a = structured.get("aircraft_type") or ""
+    s = structured.get("structure") or ""
+    z = structured.get("structure_zone") or ""
+    d = structured.get("damage_type") or ""
+
+    variants: List[str] = []
+
+    # The previously-working style
+    if a or s or z or d:
+        variants.append(f"{a} {s} {z} {d} allowable damage dent table 102".strip())
+
+    # Slightly shorter
+    variants.append(f"{a} {s} {z} allowable damage dent table 102".strip())
+
+    # Core anchors (often best with glued text)
+    variants.append("allowable damage dent table 102")
+    variants.append("table 102 dent")
+    variants.append("fuselage skin dent allowable damage")
+    variants.append("dent allowable")
+    variants.append("allowable damage")
+
+    # Deduplicate while preserving order + remove empties
+    out: List[str] = []
+    seen = set()
+    for q in variants:
+        q2 = re.sub(r"\s+", " ", (q or "").strip())
+        if not q2:
+            continue
+        if q2.lower() in seen:
+            continue
+        seen.add(q2.lower())
+        out.append(q2)
+    return out
 
 
 # -----------------------------
@@ -471,7 +497,6 @@ with colA:
 
     crack_opt = st.selectbox("Crack present?", ["Unknown", "No", "Yes"], index=0)
 
-    # Write back into structured dict
     structured["raw"] = desc.strip()
     structured["aircraft_type"] = _normalize_aircraft_type(aircraft_type) if aircraft_type else None
     structured["structure"] = structure.strip().upper() if structure else None
@@ -499,10 +524,10 @@ with colA:
     st.subheader("3) Run assessment")
     run = st.button("Run rules + SRM search + dent model", type="primary")
 
+
 with colB:
     st.subheader("Results")
 
-    # SRM DB Debug
     with st.expander("SRM DB Debug", expanded=True):
         st.write("cwd:", os.getcwd())
         st.write("SRM DB path:", str(SRM_DB))
@@ -518,96 +543,94 @@ with colB:
 
     if run:
         # ----------------
-        # SRM Search (first) with staged fallbacks
+        # SRM Search (robust)
         # ----------------
         srm_hits: List[Dict[str, Any]] = []
         srm_debug: Dict[str, Any] = {
             "selected": None,
             "signature": None,
-            "aircraft_type_filter": None,
             "queries_tried": [],
-            "query_used": None,
-            "stage": None,
+            "best_hit_match_selected_type": None,
+            "best_hit_any": None,
         }
 
-        def _mk_query(structured_: Dict[str, Any], mode: str) -> str:
-            bits: List[str] = []
-            if structured_.get("aircraft_type"):
-                bits.append(str(structured_["aircraft_type"]))
+        selected_type = _normalize_aircraft_type(structured.get("aircraft_type") or "UNKNOWN")
+        queries = _build_query_variants(structured)
 
-            if mode == "full":
-                if structured_.get("structure"):
-                    bits.append(str(structured_["structure"]))
-                if structured_.get("structure_zone"):
-                    bits.append(str(structured_["structure_zone"]))
-                if structured_.get("damage_type"):
-                    bits.append(str(structured_["damage_type"]))
+        hits_all: List[Dict[str, Any]] = []
+        hits_matching_type: List[Dict[str, Any]] = []
 
-            bits.append("allowable damage 1")
-            bits.append("fuselage skin")
-            bits.append("dent")
-            bits.append("table 102")
-            return " ".join(bits).strip()
-
-        def _run_search(conn: sqlite3.Connection, query: str, aircraft_filter: Optional[str]) -> List[Any]:
-            fn = getattr(srm_search, "search_srm", None)
-            if fn is None:
-                raise RuntimeError("srm_search.search_srm not found")
-            return fn(conn, query=query, aircraft_family=aircraft_filter, limit=8)  # type: ignore
-
-        hits_any: List[Any] = []
         if HAS_SRM_SEARCH and SRM_DB.exists():
             try:
+                fn = getattr(srm_search, "search_srm", None)
+                if fn is None:
+                    raise RuntimeError("srm_search.search_srm not found")
+                srm_debug["selected"] = "search_srm"
+                srm_debug["signature"] = str(inspect.signature(fn))
+
                 con = sqlite3.connect(str(SRM_DB))
                 try:
-                    fn = getattr(srm_search, "search_srm", None)
-                    if fn is None:
-                        raise RuntimeError("srm_search.search_srm not found")
+                    # Try each query WITH aircraft filter, then WITHOUT
+                    for q in queries:
+                        # 1) With filter
+                        srm_debug["queries_tried"].append({"query": q, "aircraft_filter": selected_type})
+                        res1 = fn(con, query=q, aircraft_family=selected_type, limit=8)  # type: ignore
+                        for h in res1 or []:
+                            d = asdict(h) if is_dataclass(h) else {"raw": str(h)}
+                            d.setdefault("pdf_page", d.get("page") or d.get("pdf_page"))
+                            hits_all.append(d)
 
-                    srm_debug["selected"] = "search_srm"
-                    srm_debug["signature"] = str(inspect.signature(fn))
+                        # 2) Without filter
+                        srm_debug["queries_tried"].append({"query": q, "aircraft_filter": None})
+                        res2 = fn(con, query=q, aircraft_family=None, limit=8)  # type: ignore
+                        for h in res2 or []:
+                            d = asdict(h) if is_dataclass(h) else {"raw": str(h)}
+                            d.setdefault("pdf_page", d.get("page") or d.get("pdf_page"))
+                            hits_all.append(d)
 
-                    a_type = structured.get("aircraft_type")
-                    a_type = _normalize_aircraft_type(a_type) if a_type else None
-                    srm_debug["aircraft_type_filter"] = a_type
+                    # De-dupe hits (doc+file+page+snippet prefix)
+                    seen = set()
+                    uniq: List[Dict[str, Any]] = []
+                    for h in hits_all:
+                        key = (
+                            str(h.get("doc_title") or ""),
+                            str(h.get("file_name") or ""),
+                            int(h.get("page") or h.get("pdf_page") or 0),
+                            str(h.get("snippet") or "")[:80],
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        uniq.append(h)
+                    hits_all = uniq
 
-                    q1 = _mk_query(structured, mode="full")
-                    srm_debug["queries_tried"].append({"stage": "1_full_with_type", "query": q1, "aircraft": a_type})
-                    hits_any = _run_search(con, q1, aircraft_filter=a_type)
-                    if hits_any:
-                        srm_debug["stage"] = "1_full_with_type"
-                        srm_debug["query_used"] = q1
-                    else:
-                        srm_debug["queries_tried"].append({"stage": "2_full_no_type", "query": q1, "aircraft": None})
-                        hits_any = _run_search(con, q1, aircraft_filter=None)
-                        if hits_any:
-                            srm_debug["stage"] = "2_full_no_type"
-                            srm_debug["query_used"] = q1
-                        else:
-                            q2 = _mk_query(structured, mode="core")
-                            srm_debug["queries_tried"].append({"stage": "3_core_with_type", "query": q2, "aircraft": a_type})
-                            hits_any = _run_search(con, q2, aircraft_filter=a_type)
-                            if hits_any:
-                                srm_debug["stage"] = "3_core_with_type"
-                                srm_debug["query_used"] = q2
-                            else:
-                                srm_debug["queries_tried"].append({"stage": "4_core_no_type", "query": q2, "aircraft": None})
-                                hits_any = _run_search(con, q2, aircraft_filter=None)
-                                srm_debug["stage"] = "4_core_no_type"
-                                srm_debug["query_used"] = q2
+                    # Split by selected aircraft
+                    for h in hits_all:
+                        ht = _hit_aircraft_type(h)
+                        if ht is not None and ht == selected_type:
+                            hits_matching_type.append(h)
+
                 finally:
                     con.close()
 
-                tmp: List[Dict[str, Any]] = []
-                for h in (hits_any or []):
-                    if is_dataclass(h):
-                        d = asdict(h)
-                    else:
-                        d = {"raw": str(h)}
-                    d.setdefault("pdf_page", d.get("page") or d.get("pdf_page"))
-                    d.setdefault("printed_page", d.get("printed_page"))
-                    tmp.append(d)
-                srm_hits = tmp
+                # sort by score if present (bm25 rank: more negative is "better" in your output)
+                def _score(h: Dict[str, Any]) -> float:
+                    try:
+                        return float(h.get("score"))
+                    except Exception:
+                        return 9999.0
+
+                hits_all.sort(key=_score)
+                hits_matching_type.sort(key=_score)
+
+                # what we display as SRM hits panel:
+                srm_hits = hits_all[:8]
+
+                # pick best hit for assessment: must match aircraft type
+                best_hit = _pick_best_table102_hit(hits_matching_type) if hits_matching_type else None
+
+                srm_debug["best_hit_match_selected_type"] = best_hit
+                srm_debug["best_hit_any"] = _pick_best_table102_hit(hits_all) if hits_all else None
 
             except Exception as e:
                 srm_hits = [{"error": str(e)}]
@@ -617,34 +640,38 @@ with colB:
             elif not SRM_DB.exists():
                 srm_hits = [{"status": "skipped", "reason": "srm_index.db not found in deployment"}]
 
-        # Determine best SRM hit
-        best_hit = None
-        if isinstance(srm_hits, list) and srm_hits and isinstance(srm_hits[0], dict) and "error" not in srm_hits[0]:
-            best_hit = _pick_best_table102_hit(srm_hits)
+        # ----------------
+        # SRM Reference (top hit matching selected aircraft type)
+        # ----------------
+        best_hit_for_assessment = None
+        if isinstance(srm_debug.get("best_hit_match_selected_type"), dict):
+            best_hit_for_assessment = srm_debug["best_hit_match_selected_type"]
 
-        if best_hit:
+        if best_hit_for_assessment:
             st.markdown("### SRM Reference (top hit)")
-            doc = best_hit.get("doc_title") or best_hit.get("title") or best_hit.get("file_name") or "SRM"
-            rev = best_hit.get("revision") or "UNKNOWN"
-            file_name = best_hit.get("file_name") or ""
-            printed = best_hit.get("printed_page")
-            pdf_page = best_hit.get("pdf_page") or best_hit.get("page")
+            doc = best_hit_for_assessment.get("doc_title") or best_hit_for_assessment.get("file_name") or "SRM"
+            rev = best_hit_for_assessment.get("revision") or "UNKNOWN"
+            file_name = best_hit_for_assessment.get("file_name") or ""
+            printed = best_hit_for_assessment.get("printed_page")
+            pdf_page = best_hit_for_assessment.get("pdf_page") or best_hit_for_assessment.get("page")
             page_str = f"Printed page {printed}" if printed else f"PDF page {pdf_page}"
             st.write(f"**{doc}** • {page_str} • File {file_name} (Rev {rev})")
-            st.code(str(best_hit.get("snippet") or "")[:600], language="text")
+            st.code(str(best_hit_for_assessment.get("snippet") or "")[:600], language="text")
+        else:
+            # If we have *some* hits but none match aircraft, show that clearly.
+            if isinstance(srm_hits, list) and srm_hits and isinstance(srm_hits[0], dict) and "error" not in srm_hits[0]:
+                if srm_hits:
+                    st.markdown("### SRM Reference (top hit)")
+                    st.info(
+                        f"SRM hits exist in the library/index, but none match aircraft type **{selected_type}** "
+                        f"(based on docs.aircraft_family in srm_index.db). No SRM-based assessment will be generated."
+                    )
 
         # ----------------
         # Dent model
         # ----------------
         dent_result: Dict[str, Any] = {"status": "not_run"}
         dent_debug: Dict[str, Any] = {}
-
-        crack_present = structured.get("has_crack")
-        crack_reason = "used parsed crack flag"
-        crack_used = bool(crack_present) if crack_present is not None else False
-        if crack_present is None:
-            crack_used = False
-            crack_reason = "defaulted False because crack status was Unknown"
 
         if HAS_DAMAGE_MODELS and structured.get("damage_type") == "DENT":
             try:
@@ -668,8 +695,6 @@ with colB:
                     "DentDamage_signature": str(sig),
                     "accepted_params": list(sig.parameters.keys()),
                     "filtered_kwargs_used": filtered,
-                    "crack_present_used": filtered.get("crack_present"),
-                    "crack_present_reason": crack_reason,
                 }
 
                 dent = DentDamage(**filtered)  # type: ignore
@@ -723,7 +748,6 @@ with colB:
                         "_flat": dict(structured),
                     }
                     rules_debug["ctx_sent"] = ctx
-                    # rules_engine expects aircraft_family argument name, but value is aircraft type (B737 etc)
                     rules_rows = fn(str(RULES_DB), structured.get("aircraft_type") or "UNKNOWN", ctx, None)  # type: ignore
                     if is_dataclass(rules_rows):
                         rules_rows = asdict(rules_rows)
@@ -739,98 +763,82 @@ with colB:
                 rules_rows = [{"status": "skipped", "reason": "rules.db not found in deployment"}]
 
         # ----------------
-        # SRM-based "Final statement" (must have SRM hit, and must match aircraft type)
+        # SRM-based Final Statement
         # ----------------
         st.markdown("### Final statement (SRM-based)")
         final_lines: List[str] = []
 
-        selected_type = structured.get("aircraft_type") or "UNKNOWN"
+        dtype = structured.get("damage_type")
+        dia = structured.get("dent_diameter_mm")
+        dep = structured.get("dent_depth_mm")
+        ratio = _compute_wy_ratio(dia, dep)
 
-        if not best_hit:
-            final_lines.append("Reference: **(no SRM hit available in library)**")
+        if not best_hit_for_assessment:
+            final_lines.append("Reference: **(no SRM hit available for selected aircraft type in library)**")
             final_lines.append(
                 f"Decision: **NO ASSESSMENT GENERATED** (no SRM reference available for aircraft type **{selected_type}** in the current library/index)."
             )
             st.write("\n".join(final_lines))
         else:
-            # If hit aircraft differs from selected, do not assess
-            hit_type = best_hit.get("aircraft_family") or best_hit.get("aircraft_type") or None
-            hit_type_norm = _normalize_aircraft_type(hit_type) if hit_type else None
-            selected_type_norm = _normalize_aircraft_type(selected_type) if selected_type else None
+            doc = best_hit_for_assessment.get("doc_title") or best_hit_for_assessment.get("file_name") or "SRM"
+            rev = best_hit_for_assessment.get("revision") or "UNKNOWN"
+            file_name = best_hit_for_assessment.get("file_name") or ""
+            printed = best_hit_for_assessment.get("printed_page")
+            pdf_page = best_hit_for_assessment.get("pdf_page") or best_hit_for_assessment.get("page")
+            page_str = f"Printed page {printed}" if printed else f"PDF page {pdf_page}"
 
-            if hit_type_norm and selected_type_norm and hit_type_norm != selected_type_norm:
-                doc = best_hit.get("doc_title") or best_hit.get("file_name") or "SRM"
-                final_lines.append(f"Reference: **{doc}** (aircraft={hit_type_norm})")
-                final_lines.append(
-                    f"Decision: **NO ASSESSMENT GENERATED** (top SRM reference aircraft `{hit_type_norm}` does not match selected aircraft type `{selected_type_norm}`)."
-                )
-                st.write("\n".join(final_lines))
+            snippet = str(best_hit_for_assessment.get("snippet") or "")
+            mtab = re.search(r"\bTable\s*(\d+)\b", snippet, flags=re.IGNORECASE)
+            table_no = mtab.group(1) if mtab else "102"
+
+            final_lines.append(
+                f"Reference: **{doc}** (Rev {rev}) • **Table {table_no}** • **{page_str}** • File `{file_name}`"
+            )
+
+            # Prototype SRM dent reasoning (only for DENT)
+            if dtype != "DENT":
+                final_lines.append(f"Decision: **NO ASSESSMENT GENERATED** (damage_type={dtype}; SRM dent logic applies to DENT only).")
             else:
-                # Build reference line
-                doc = best_hit.get("doc_title") or best_hit.get("file_name") or "SRM"
-                rev = best_hit.get("revision") or "UNKNOWN"
-                file_name = best_hit.get("file_name") or ""
-                printed = best_hit.get("printed_page")
-                pdf_page = best_hit.get("pdf_page") or best_hit.get("page")
-                page_str = f"Printed page {printed}" if printed else f"PDF page {pdf_page}"
-
-                snippet = str(best_hit.get("snippet") or "")
-                mtab = re.search(r"\bTable\s*(\d+)\b", snippet, flags=re.IGNORECASE)
-                table_no = mtab.group(1) if mtab else "102"
-
-                final_lines.append(
-                    f"Reference: **{doc}** (Rev {rev}) • **Table {table_no}** • **{page_str}** • File `{file_name}`"
-                )
-
-                # Dent “why” block
-                dtype = structured.get("damage_type")
-                dia = structured.get("dent_diameter_mm")
-                dep = structured.get("dent_depth_mm")
-                ratio = _compute_wy_ratio(dia, dep)
-
-                if dtype == "DENT":
-                    if structured.get("has_crack") is True:
-                        final_lines.append("Decision: **OUT OF LIMITS** (crack present ⇒ not allowable / engineering review).")
-                    else:
-                        if dep is None:
-                            final_lines.append("Decision: **ENGINEERING REVIEW** (missing dent depth).")
-                        else:
-                            if dep > 6.35:
-                                final_lines.append("Decision: **OUT OF LIMITS** (Depth > 6.35 mm (0.25 in) ⇒ not allowable).")
-                            elif dep > 3.175:
-                                if ratio is None:
-                                    final_lines.append("Decision: **ENGINEERING REVIEW** (cannot compute W/Y ratio).")
-                                else:
-                                    if ratio >= 30.0:
-                                        final_lines.append("Decision: **WITHIN LIMITS** (Depth in (3.175..6.35] mm and W/Y ≥ 30).")
-                                    else:
-                                        final_lines.append("Decision: **OUT OF LIMITS** (Depth in (3.175..6.35] mm and W/Y < 30).")
-                            else:
-                                final_lines.append("Decision: **WITHIN LIMITS** (Depth ≤ 3.175 mm (0.125 in) prototype band).")
-
-                    final_lines.append("")
-                    final_lines.append("Proof / calculations:")
-                    if dia is None or dep is None:
-                        final_lines.append(f"- W (diameter): {dia} mm")
-                        final_lines.append(f"- Y (depth): {dep} mm")
-                        final_lines.append("- W/Y: (cannot compute)")
-                    else:
-                        final_lines.append(f"- W (diameter): {dia:.2f} mm")
-                        final_lines.append(f"- Y (depth): {dep:.2f} mm")
-                        if ratio is not None:
-                            final_lines.append(f"- W/Y = {dia:.2f} / {dep:.2f} = **{ratio:.2f}**")
-                        else:
-                            final_lines.append("- W/Y: (cannot compute)")
-                    if structured.get("has_crack") is True:
-                        final_lines.append("- Crack: **present** (override to OUT OF LIMITS)")
-                    elif structured.get("has_crack") is False:
-                        final_lines.append("- Crack: not reported")
-                    else:
-                        final_lines.append("- Crack: unknown (treated as not present for prototype dent math)")
+                if structured.get("has_crack") is True:
+                    final_lines.append("Decision: **OUT OF LIMITS** (crack present ⇒ not allowable / engineering review).")
                 else:
-                    final_lines.append(f"Decision: **NO ASSESSMENT GENERATED** (damage_type={dtype}; SRM dent logic applies to DENT only).")
+                    if dep is None:
+                        final_lines.append("Decision: **ENGINEERING REVIEW** (missing dent depth).")
+                    else:
+                        if dep > 6.35:
+                            final_lines.append("Decision: **OUT OF LIMITS** (Depth > 6.35 mm (0.25 in) ⇒ not allowable).")
+                        elif dep > 3.175:
+                            if ratio is None:
+                                final_lines.append("Decision: **ENGINEERING REVIEW** (cannot compute W/Y ratio).")
+                            else:
+                                if ratio >= 30.0:
+                                    final_lines.append("Decision: **WITHIN LIMITS** (Depth in (3.175..6.35] mm and W/Y ≥ 30).")
+                                else:
+                                    final_lines.append("Decision: **OUT OF LIMITS** (Depth in (3.175..6.35] mm and W/Y < 30).")
+                        else:
+                            final_lines.append("Decision: **WITHIN LIMITS** (Depth ≤ 3.175 mm (0.125 in) prototype band).")
 
-                st.write("\n".join(final_lines))
+                final_lines.append("")
+                final_lines.append("Proof / calculations:")
+                if dia is None or dep is None:
+                    final_lines.append(f"- W (diameter): {dia} mm")
+                    final_lines.append(f"- Y (depth): {dep} mm")
+                    final_lines.append("- W/Y: (cannot compute)")
+                else:
+                    final_lines.append(f"- W (diameter): {dia:.2f} mm")
+                    final_lines.append(f"- Y (depth): {dep:.2f} mm")
+                    if ratio is not None:
+                        final_lines.append(f"- W/Y = {dia:.2f} / {dep:.2f} = **{ratio:.2f}**")
+                    else:
+                        final_lines.append("- W/Y: (cannot compute)")
+                if structured.get("has_crack") is True:
+                    final_lines.append("- Crack: **present** (override to OUT OF LIMITS)")
+                elif structured.get("has_crack") is False:
+                    final_lines.append("- Crack: not reported")
+                else:
+                    final_lines.append("- Crack: unknown (treated as not present for prototype dent math)")
+
+            st.write("\n".join(final_lines))
 
         # ----------------
         # Dent model output
@@ -861,6 +869,8 @@ with colB:
         # ----------------
         st.markdown("### SRM search hits (prototype)")
         if isinstance(srm_hits, list) and srm_hits and isinstance(srm_hits[0], dict) and "error" not in srm_hits[0]:
+            if not srm_hits:
+                st.write("No SRM hits returned.")
             for hit in srm_hits[:8]:
                 title = hit.get("doc_title") or hit.get("file_name") or "SRM hit"
                 rev = hit.get("revision") or "UNKNOWN"
@@ -891,7 +901,7 @@ with colB:
             except Exception as e:
                 st.error(
                     f"Failed to log assessment: {e}\n\n"
-                    "If you recently added new columns (e.g., frame/aircraft_type), delete assessments.db to regenerate."
+                    "If you changed schema recently, delete assessments.db to regenerate."
                 )
 
     else:
@@ -947,7 +957,7 @@ if ASSESSMENTS_DB.exists():
     except Exception as e:
         st.error(
             f"Could not read assessments.db: {e}\n\n"
-            "If you changed the schema (e.g., added aircraft_type/frame), delete assessments.db to regenerate."
+            "If you changed schema recently, delete assessments.db to regenerate."
         )
 else:
     st.caption("No assessments.db yet. Run an assessment and enable logging to create it.")

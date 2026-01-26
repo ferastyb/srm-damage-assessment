@@ -170,49 +170,63 @@ def normalize_pdf_text(s: str) -> str:
 
 def extract_printed_page(raw_text: str) -> Optional[int]:
     """
-    Attempt to detect the SRM *printed* page number (e.g., 108).
-    Heuristic:
-      - Look at the last ~12 non-empty lines of the raw extracted page text.
-      - Try patterns like "PAGE 108" / "Page 108"
-      - Then try a line that is only digits (2-4 digits), often in footer.
+    Detect SRM *printed* page number from the footer.
+
+    This is intentionally strict to avoid confusing:
+      - PDF page index (e.g., page 8)
+      - with SRM printed page numbers (often 3+ digits, e.g., 108)
+
+    Rules:
+      1) If "PAGE <n>" (or "Page <n>") appears in the footer tail -> accept <n> (1-4 digits).
+      2) Otherwise, accept ONLY 3-4 digit standalone/footer numbers (e.g., 108, 412).
+      3) SRM footer often includes ATA like "53-00-01" near the printed page; we try to capture that too.
     """
     if not raw_text:
         return None
 
-    # Keep original-ish line breaks for footer scan
     raw = raw_text.replace("\r\n", "\n").replace("\r", "\n")
     lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
     if not lines:
         return None
 
-    tail = lines[-12:]
+    tail = lines[-20:]
+    tail_text = "\n".join(tail)
 
-    # Pattern 1: explicit PAGE label
-    for ln in tail[::-1]:
-        m = re.search(r"\bPAGE\s+(\d{1,4})\b", ln, flags=re.IGNORECASE)
-        if m:
-            try:
-                return int(m.group(1))
-            except Exception:
-                pass
-        m = re.search(r"\bPage\s+(\d{1,4})\b", ln, flags=re.IGNORECASE)
-        if m:
-            try:
-                return int(m.group(1))
-            except Exception:
-                pass
+    # 1) Explicit PAGE label (accept 1-4 digits)
+    m = re.search(r"\bPAGE\s*[:\-]?\s*(\d{1,4})\b", tail_text, flags=re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
 
-    # Pattern 2: standalone digits line (footer)
-    for ln in tail[::-1]:
-        if re.fullmatch(r"\d{2,4}", ln):
+    m = re.search(r"\bPage\s*[:\-]?\s*(\d{1,4})\b", tail_text, flags=re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
+
+    # 2) SRM footer pattern: ATA like "53-00-01" near printed page number
+    # Accept ONLY 3-4 digits here to avoid grabbing "8".
+    m = re.search(r"\b\d{2}-\d{2}-\d{2}\b[^\d]{0,50}(\d{3,4})\b", tail_text)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
+
+    # 3) Standalone digits line near the bottom (STRICT: only 3-4 digits)
+    for ln in reversed(tail):
+        if re.fullmatch(r"\d{3,4}", ln):
             try:
                 return int(ln)
             except Exception:
                 pass
 
-    # Pattern 3: sometimes footers have "… 108" at end
-    for ln in tail[::-1]:
-        m = re.search(r"(\d{2,4})\s*$", ln)
+    # 4) End-of-line number (STRICT: only 3-4 digits)
+    for ln in reversed(tail):
+        m = re.search(r"(\d{3,4})\s*$", ln)
         if m:
             try:
                 return int(m.group(1))

@@ -1,18 +1,5 @@
 # dent_checker_app.py
 # Streamlit app: SRM Damage Assessment (Prototype)
-#
-# FIX in this version (your current failure):
-# - Your deployed srm_index.db schema does NOT have p.printed_page, but your srm_search.py SQL tries to select it.
-#   That causes: "no such column: p.printed_page" and then the app thinks there are no SRM hits.
-#
-# Patch applied here:
-# 1) Keep your UI exactly as-is.
-# 2) Add an internal SRM fallback search that DOES NOT require printed_page.
-#    If srm_search.search_srm fails (especially the printed_page column error), we automatically fallback.
-#
-# Result:
-# - B737 ATA 53 hits will show again (using the same DB you confirmed has docs=B737 and FTS sanity hits).
-# - Final statement will only be generated when a valid SRM hit is found AND passes ATA gating + location gating.
 
 from __future__ import annotations
 
@@ -51,21 +38,18 @@ srm_search_err = None
 
 try:
     from damage_models import DentDamage, assess_dent, build_plain_text_summary  # type: ignore
-
     HAS_DAMAGE_MODELS = True
 except Exception as e:
     damage_models_err = e
 
 try:
     import rules_engine  # type: ignore
-
     HAS_RULES_ENGINE = True
 except Exception as e:
     rules_engine_err = e
 
 try:
     import srm_search  # type: ignore
-
     HAS_SRM_SEARCH = True
 except Exception as e:
     srm_search_err = e
@@ -144,26 +128,6 @@ def _find_float_in(text: str, patterns: List[str]) -> Optional[float]:
     return None
 
 
-def _parse_stringer(text: str) -> Optional[str]:
-    m = re.search(r"\bS[-\s]?(\d{1,3})([LR])\b", text, flags=re.IGNORECASE)
-    if m:
-        return f"{int(m.group(1))}{m.group(2).upper()}"
-    m2 = re.search(r"\bSTRINGER\s*(\d{1,3})([LR])\b", text, flags=re.IGNORECASE)
-    if m2:
-        return f"{int(m2.group(1))}{m2.group(2).upper()}"
-    return None
-
-
-def _parse_frame(text: str) -> Optional[int]:
-    mf = re.search(r"\b(?:FR|FRAME)\s*[-]?\s*(\d{1,4})\b", text, flags=re.IGNORECASE)
-    if mf:
-        try:
-            return int(mf.group(1))
-        except Exception:
-            return None
-    return None
-
-
 def parse_damage_description(desc: str) -> Dict[str, Any]:
     raw = desc.strip()
 
@@ -188,7 +152,7 @@ def parse_damage_description(desc: str) -> Dict[str, Any]:
     if m:
         out["aircraft_type"] = _normalize_aircraft_type(m.group(1))
 
-    # Structure (last match wins)
+    # Structure: last match wins
     struct_map = [
         ("FUSELAGE", r"\bfuselage\b"),
         ("WING", r"\bwing\b"),
@@ -204,7 +168,6 @@ def parse_damage_description(desc: str) -> Dict[str, Any]:
         if re.search(pat, raw, flags=re.IGNORECASE):
             out["structure"] = label
 
-    # Zone / sub-area (last match wins)
     zone_map = [
         ("SKIN", r"\bskin\b"),
         ("STRINGER", r"\bstringer\b|\bstr\b"),
@@ -230,10 +193,21 @@ def parse_damage_description(desc: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    out["stringer"] = _parse_stringer(raw)
-    out["frame"] = _parse_frame(raw)
+    m = re.search(r"\bS[-\s]?(\d{1,3})([LR])\b", raw, flags=re.IGNORECASE)
+    if m:
+        out["stringer"] = f"{int(m.group(1))}{m.group(2).upper()}"
+    else:
+        m2 = re.search(r"\bSTRINGER\s*(\d{1,3})([LR])\b", raw, flags=re.IGNORECASE)
+        if m2:
+            out["stringer"] = f"{int(m2.group(1))}{m2.group(2).upper()}"
 
-    # Damage type priority
+    mf = re.search(r"\b(?:FR|FRAME)\s*[-]?\s*(\d{1,4})\b", raw, flags=re.IGNORECASE)
+    if mf:
+        try:
+            out["frame"] = int(mf.group(1))
+        except Exception:
+            pass
+
     if re.search(r"\bcrack\b", raw, flags=re.IGNORECASE):
         out["damage_type"] = "CRACK"
     elif re.search(r"\bdent\b", raw, flags=re.IGNORECASE):
@@ -243,7 +217,6 @@ def parse_damage_description(desc: str) -> Dict[str, Any]:
     elif re.search(r"\bcorrosion\b", raw, flags=re.IGNORECASE):
         out["damage_type"] = "CORROSION"
 
-    # Crack present?
     if re.search(r"\bno\s+(visible\s+)?crack(s)?\b", raw, flags=re.IGNORECASE):
         out["has_crack"] = False
     elif re.search(r"\bvisible\s+crack(s)?\b", raw, flags=re.IGNORECASE):
@@ -251,37 +224,24 @@ def parse_damage_description(desc: str) -> Dict[str, Any]:
     elif re.search(r"\bcrack(s)?\b", raw, flags=re.IGNORECASE):
         out["has_crack"] = True
 
-    # Dent dims
-    dia_mm = _find_float_mm(
-        raw,
-        [
-            r"(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diameter)\b",
-            r"\bdia\s*(\d+(?:\.\d+)?)\s*mm\b",
-            r"dent\s*(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diameter)\b",
-        ],
-    )
-    depth_mm = _find_float_mm(
-        raw,
-        [
-            r"(\d+(?:\.\d+)?)\s*mm\s*depth\b",
-            r"\bdepth\s*(\d+(?:\.\d+)?)\s*mm\b",
-        ],
-    )
+    dia_mm = _find_float_mm(raw, [
+        r"(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diameter)\b",
+        r"\bdia\s*(\d+(?:\.\d+)?)\s*mm\b",
+        r"dent\s*(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diameter)\b",
+    ])
+    depth_mm = _find_float_mm(raw, [
+        r"(\d+(?:\.\d+)?)\s*mm\s*depth\b",
+        r"\bdepth\s*(\d+(?:\.\d+)?)\s*mm\b",
+    ])
 
-    dia_in = _find_float_in(
-        raw,
-        [
-            r"(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\s*(?:dia|diameter)\b",
-            r"\bdia\s*(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\b",
-        ],
-    )
-    depth_in = _find_float_in(
-        raw,
-        [
-            r"(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\s*depth\b",
-            r"\bdepth\s*(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\b",
-        ],
-    )
+    dia_in = _find_float_in(raw, [
+        r"(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\s*(?:dia|diameter)\b",
+        r"\bdia\s*(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\b",
+    ])
+    depth_in = _find_float_in(raw, [
+        r"(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\s*depth\b",
+        r"\bdepth\s*(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\b",
+    ])
 
     if dia_mm is None and dia_in is not None:
         dia_mm = dia_in * 25.4
@@ -327,13 +287,7 @@ def init_assessments_db(db_path: Path) -> None:
         con.close()
 
 
-def log_assessment(
-    db_path: Path,
-    structured: Dict[str, Any],
-    rules_rows: Any,
-    srm_hits: Any,
-    result: Any,
-) -> None:
+def log_assessment(db_path: Path, structured: Dict[str, Any], rules_rows: Any, srm_hits: Any, result: Any) -> None:
     init_assessments_db(db_path)
     con = sqlite3.connect(str(db_path))
     try:
@@ -371,32 +325,6 @@ def log_assessment(
         con.close()
 
 
-def _pick_best_table_hit(hits: List[Dict[str, Any]], table_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    if not hits:
-        return None
-    if table_hint:
-        for h in hits:
-            sn = str(h.get("snippet") or h.get("text") or "")
-            if re.search(rf"\bTable\s*{re.escape(table_hint)}\b", sn, flags=re.IGNORECASE):
-                return h
-    for h in hits:
-        sn = str(h.get("snippet") or h.get("text") or "")
-        if re.search(r"\bTable\s*\d+\b", sn, flags=re.IGNORECASE):
-            return h
-    return hits[0]
-
-
-def _compute_wy_ratio(dia_mm: Optional[float], depth_mm: Optional[float]) -> Optional[float]:
-    if dia_mm is None or depth_mm is None:
-        return None
-    if depth_mm <= 0:
-        return None
-    return dia_mm / depth_mm
-
-
-# -----------------------------
-# ATA gating + coverage extraction
-# -----------------------------
 ATA_STRUCTURE_MAP: Dict[str, int] = {
     "FUSELAGE": 53,
     "WING": 57,
@@ -433,175 +361,31 @@ def infer_ata_from_doc(hit: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-def _stringer_to_tuple(s: str) -> Optional[Tuple[int, str]]:
-    m = re.match(r"^\s*(\d{1,3})\s*([LR])\s*$", (s or "").upper())
-    if not m:
+def _pick_best_table_hit(hits: List[Dict[str, Any]], table_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if not hits:
         return None
-    return int(m.group(1)), m.group(2)
+    if table_hint:
+        for h in hits:
+            sn = str(h.get("snippet") or h.get("text") or "")
+            if re.search(rf"\bTable\s*{re.escape(table_hint)}\b", sn, flags=re.IGNORECASE):
+                return h
+    for h in hits:
+        sn = str(h.get("snippet") or h.get("text") or "")
+        if re.search(r"\bTable\s*\d+\b", sn, flags=re.IGNORECASE):
+            return h
+    return hits[0]
 
 
-def _stringer_in_range(s: str, a: str, b: str) -> bool:
-    ts = _stringer_to_tuple(s)
-    ta = _stringer_to_tuple(a)
-    tb = _stringer_to_tuple(b)
-    if not (ts and ta and tb):
-        return False
-
-    sn, ss = ts
-    an, asd = ta
-    bn, bsd = tb
-
-    lo_n, hi_n = (an, bn) if an <= bn else (bn, an)
-    if sn < lo_n or sn > hi_n:
-        return False
-
-    if sn == an == bn:
-        lo_side = min(asd, bsd)
-        hi_side = max(asd, bsd)
-        return lo_side <= ss <= hi_side
-
-    return True
-
-
-def extract_coverage_ranges(text: str) -> Dict[str, Any]:
-    t = text or ""
-    out: Dict[str, Any] = {"sta_ranges": [], "stringer_ranges": [], "frame_ranges": []}
-
-    for m in re.finditer(r"\bStations?\s*([0-9]{2,5})\s*(?:-|to)\s*([0-9]{2,5})\b", t, flags=re.IGNORECASE):
-        try:
-            out["sta_ranges"].append((float(m.group(1)), float(m.group(2))))
-        except Exception:
-            pass
-
-    for m in re.finditer(r"\bStringers?\s*([0-9]{1,3}\s*[LR])\s*(?:-|to)\s*([0-9]{1,3}\s*[LR])\b", t, flags=re.IGNORECASE):
-        a = m.group(1).replace(" ", "").upper()
-        b = m.group(2).replace(" ", "").upper()
-        out["stringer_ranges"].append((a, b))
-
-    for m in re.finditer(r"\bFrames?\s*([0-9]{1,4})\s*(?:-|to)\s*([0-9]{1,4})\b", t, flags=re.IGNORECASE):
-        try:
-            out["frame_ranges"].append((int(m.group(1)), int(m.group(2))))
-        except Exception:
-            pass
-
-    return out
-
-
-def verify_location_vs_coverage(structured: Dict[str, Any], coverage: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    msgs: List[str] = []
-    ok = True
-
-    sta = structured.get("sta")
-    stringer = structured.get("stringer")
-    frame = structured.get("frame")
-
-    sta_ranges: List[Tuple[float, float]] = coverage.get("sta_ranges") or []
-    str_ranges: List[Tuple[str, str]] = coverage.get("stringer_ranges") or []
-    fr_ranges: List[Tuple[int, int]] = coverage.get("frame_ranges") or []
-
-    if sta_ranges:
-        if sta is None:
-            msgs.append("• SRM excerpt has station ranges, but STA not provided; cannot verify STA.")
-        else:
-            in_any = any(min(a, b) <= float(sta) <= max(a, b) for a, b in sta_ranges)
-            if in_any:
-                msgs.append(f"• STA {sta:g} is within SRM station coverage ranges: {sta_ranges}")
-            else:
-                ok = False
-                msgs.append(f"• STA {sta:g} is NOT within SRM station coverage ranges: {sta_ranges}")
-    else:
-        msgs.append("• SRM excerpt has no explicit station ranges; cannot verify STA.")
-
-    if str_ranges:
-        if not stringer:
-            msgs.append("• SRM excerpt has stringer ranges, but stringer not provided; cannot verify stringer.")
-        else:
-            in_any = any(_stringer_in_range(stringer, a, b) for a, b in str_ranges)
-            if in_any:
-                msgs.append(f"• Stringer {stringer} is within SRM stringer coverage ranges: {str_ranges}")
-            else:
-                ok = False
-                msgs.append(f"• Stringer {stringer} is NOT within SRM stringer coverage ranges: {str_ranges}")
-    else:
-        msgs.append("• SRM excerpt has no explicit stringer ranges; cannot verify stringer.")
-
-    if fr_ranges:
-        if frame is None:
-            msgs.append("• SRM excerpt has frame ranges, but FR not provided; cannot verify frame.")
-        else:
-            in_any = any(min(a, b) <= int(frame) <= max(a, b) for a, b in fr_ranges)
-            if in_any:
-                msgs.append(f"• FR {frame} is within SRM frame coverage ranges: {fr_ranges}")
-            else:
-                ok = False
-                msgs.append(f"• FR {frame} is NOT within SRM frame coverage ranges: {fr_ranges}")
-    else:
-        msgs.append("• SRM excerpt has no explicit frame ranges; cannot verify frame.")
-
-    return ok, msgs
+def _compute_wy_ratio(dia_mm: Optional[float], depth_mm: Optional[float]) -> Optional[float]:
+    if dia_mm is None or depth_mm is None:
+        return None
+    if depth_mm <= 0:
+        return None
+    return dia_mm / depth_mm
 
 
 # -----------------------------
-# SRM fallback search (NO printed_page dependency)
-# -----------------------------
-def _fts_snippet_expr() -> str:
-    return "snippet(pages_fts, 0, '[', ']', '…', 16)"
-
-
-def fallback_search_srm(
-    db_path: Path,
-    query: str,
-    aircraft_type: Optional[str],
-    limit: int = 8,
-) -> List[Dict[str, Any]]:
-    """
-    Internal fallback SRM search that works with your current DB schema:
-    - docs: (id, aircraft_family, revision, title, file_name, file_hash, ...)
-    - pages: (id, doc_id, page_no, text, ...)
-    - pages_fts: fts5 external content (rowid == pages.id)
-    """
-    con = sqlite3.connect(str(db_path))
-    try:
-        sql = f"""
-        SELECT
-          d.title AS doc_title,
-          d.revision AS revision,
-          d.aircraft_family AS aircraft_family,
-          d.file_name AS file_name,
-          p.page_no AS page_no,
-          {_fts_snippet_expr()} AS snip,
-          bm25(pages_fts) AS rank
-        FROM pages_fts
-        JOIN pages p ON p.id = pages_fts.rowid
-        JOIN docs d ON d.id = p.doc_id
-        WHERE pages_fts MATCH ?
-          AND (? IS NULL OR d.aircraft_family = ?)
-        ORDER BY rank
-        LIMIT ?
-        """
-        rows = con.execute(sql, (query, aircraft_type, aircraft_type, limit)).fetchall()
-        hits: List[Dict[str, Any]] = []
-        for r in rows:
-            hits.append(
-                {
-                    "doc_title": r[0] or "",
-                    "revision": r[1],
-                    "aircraft_family": r[2],
-                    "file_name": r[3],
-                    "pdf_page": int(r[4]) if r[4] is not None else None,
-                    "page": int(r[4]) if r[4] is not None else None,
-                    "printed_page": None,
-                    "snippet": r[5] or "",
-                    "score": float(r[6]) if r[6] is not None else 0.0,
-                }
-            )
-        return hits
-    finally:
-        con.close()
-
-
-# -----------------------------
-# Sidebar: environment / health
+# Sidebar
 # -----------------------------
 with st.sidebar:
     st.header("Environment")
@@ -638,18 +422,12 @@ colA, colB = st.columns([1.1, 0.9], gap="large")
 with colA:
     st.subheader("1) Paste damage description")
     default_text = "B737, fuselage, LH side, STA 123, S-10L, skin dent 0.25mm dia, 3.18mm depth, no visible crack."
-    desc = st.text_area(
-        "Damage description",
-        value=default_text,
-        height=120,
-        help="Paste a single-line or multi-line AOG description. The app will parse into structured fields.",
-    )
+    desc = st.text_area("Damage description", value=default_text, height=120)
 
     parse_now = st.button("Parse description", type="primary")
 
     if "structured" not in st.session_state:
         st.session_state.structured = parse_damage_description(default_text)
-
     if parse_now:
         st.session_state.structured = parse_damage_description(desc)
 
@@ -680,6 +458,7 @@ with colA:
 
     crack_opt = st.selectbox("Crack present?", ["Unknown", "No", "Yes"], index=0)
 
+    # Write back
     structured["raw"] = desc.strip()
     structured["aircraft_type"] = _normalize_aircraft_type(aircraft_type) if aircraft_type else None
     structured["structure"] = structure.strip().upper() if structure else None
@@ -692,7 +471,6 @@ with colA:
         structured["frame"] = int(frame) if str(frame).strip() else None
     except Exception:
         structured["frame"] = None
-
     structured["damage_type"] = damage_type
     structured["dent_diameter_mm"] = None if dent_dia == 0.0 else float(dent_dia)
     structured["dent_depth_mm"] = None if dent_depth == 0.0 else float(dent_depth)
@@ -716,138 +494,146 @@ with colB:
         st.write("srm_index.db exists:", SRM_DB.exists())
         if SRM_DB.exists():
             st.write("srm_index.db size (bytes):", SRM_DB.stat().st_size)
-            try:
-                st.write("srm_index.db sha256 (prefix):", sha256_path(SRM_DB)[:16])
-            except Exception as e:
-                st.write("sha256 error:", str(e))
-        else:
-            st.info("Commit srm_index.db to the repo if you want SRM hits on Streamlit Cloud.")
+            st.write("srm_index.db sha256 (prefix):", sha256_path(SRM_DB)[:16])
 
     if run:
+        # Required ATA
         required_ata = required_ata_for_struct(structured.get("structure"))
-        required_ata_str = f"{required_ata}" if required_ata is not None else "UNKNOWN"
 
-        # ----------------
-        # SRM Search (try module, fallback if it errors)
-        # ----------------
+        # SRM search
         srm_hits: List[Dict[str, Any]] = []
-        srm_debug: Dict[str, Any] = {
-            "selected": None,
-            "signature": None,
-            "query_used": None,
-            "required_ata": required_ata,
-            "fallback_used": False,
-            "module_error": None,
-        }
+        srm_debug: Dict[str, Any] = {"selected": None, "signature": None, "query_used": None, "required_ata": required_ata}
 
-        query_used = ""
-        if SRM_DB.exists():
-            q_bits = []
-            if structured.get("aircraft_type"):
-                q_bits.append(str(structured["aircraft_type"]))
-            if structured.get("structure"):
-                q_bits.append(str(structured["structure"]))
-            if structured.get("structure_zone"):
-                q_bits.append(str(structured["structure_zone"]))
-            if structured.get("damage_type"):
-                q_bits.append(str(structured["damage_type"]))
-            q_bits.append("allowable damage dent table 102")
-            query_used = " ".join(q_bits).strip()
-            srm_debug["query_used"] = query_used
+        if HAS_SRM_SEARCH and SRM_DB.exists():
+            try:
+                q_bits = []
+                if structured.get("aircraft_type"):
+                    q_bits.append(str(structured["aircraft_type"]))
+                if structured.get("structure"):
+                    q_bits.append(str(structured["structure"]))
+                if structured.get("structure_zone"):
+                    q_bits.append(str(structured["structure_zone"]))
+                if structured.get("damage_type"):
+                    q_bits.append(str(structured["damage_type"]))
+                q_bits.append("allowable damage dent table 102")
+                query_used = " ".join(q_bits).strip()
+                srm_debug["query_used"] = query_used
 
-            # Try srm_search module first (if import succeeded)
-            module_ok = False
-            if HAS_SRM_SEARCH:
+                con = sqlite3.connect(str(SRM_DB))
                 try:
-                    con = sqlite3.connect(str(SRM_DB))
-                    try:
-                        fn = getattr(srm_search, "search_srm", None)
-                        if fn is None:
-                            raise RuntimeError("srm_search.search_srm not found")
-                        srm_debug["selected"] = "srm_search.search_srm"
-                        srm_debug["signature"] = str(inspect.signature(fn))
-                        hits = fn(con, query=query_used, aircraft_family=structured.get("aircraft_type"), limit=12)  # type: ignore
-                    finally:
-                        con.close()
+                    fn = getattr(srm_search, "search_srm", None)
+                    if fn is None:
+                        raise RuntimeError("srm_search.search_srm not found")
+                    srm_debug["selected"] = "search_srm"
+                    srm_debug["signature"] = str(inspect.signature(fn))
+                    hits = fn(con, query=query_used, aircraft_family=structured.get("aircraft_type"), limit=12)  # type: ignore
+                finally:
+                    con.close()
 
-                    tmp: List[Dict[str, Any]] = []
-                    for h in hits:
-                        if is_dataclass(h):
-                            d = asdict(h)
-                        else:
-                            d = {"raw": str(h)}
-                        d.setdefault("pdf_page", d.get("page") or d.get("pdf_page"))
-                        d.setdefault("printed_page", d.get("printed_page"))
-                        tmp.append(d)
-                    srm_hits = tmp
-                    module_ok = True
-
-                except Exception as e:
-                    srm_debug["module_error"] = str(e)
-
-            # Fallback if module missing OR module errored OR returned only error objects
-            if (not module_ok) or (isinstance(srm_hits, list) and srm_hits and isinstance(srm_hits[0], dict) and "error" in srm_hits[0]):
-                srm_debug["fallback_used"] = True
-                srm_debug["selected"] = "fallback_search_srm"
-                srm_debug["signature"] = "(db_path, query, aircraft_type, limit) -> List[dict]"
-                try:
-                    srm_hits = fallback_search_srm(SRM_DB, query=query_used, aircraft_type=structured.get("aircraft_type"), limit=12)
-                except Exception as e:
-                    srm_hits = [{"error": f"fallback_search_srm failed: {e}"}]
+                tmp: List[Dict[str, Any]] = []
+                for h in hits:
+                    if is_dataclass(h):
+                        d = asdict(h)
+                    else:
+                        d = {"raw": str(h)}
+                    d["_inferred_ata"] = infer_ata_from_doc(d)
+                    d["pdf_page"] = d.get("page")
+                    d["printed_page"] = d.get("printed_page")  # always None for now
+                    tmp.append(d)
+                srm_hits = tmp
+            except Exception as e:
+                srm_hits = [{"error": str(e)}]
         else:
-            srm_hits = [{"status": "skipped", "reason": "srm_index.db not found in deployment"}]
+            if not HAS_SRM_SEARCH:
+                srm_hits = [{"status": "skipped", "reason": "srm_search module not available"}]
+            elif not SRM_DB.exists():
+                srm_hits = [{"status": "skipped", "reason": "srm_index.db not found in deployment"}]
 
-        # ATA filter
         eligible_hits: List[Dict[str, Any]] = []
         ineligible_hits: List[Dict[str, Any]] = []
 
         if isinstance(srm_hits, list) and srm_hits and isinstance(srm_hits[0], dict) and "error" not in srm_hits[0]:
             for h in srm_hits:
-                hit_ata = infer_ata_from_doc(h)
-                h["_inferred_ata"] = hit_ata
-                if required_ata is None:
+                hit_ata = h.get("_inferred_ata")
+                if required_ata is None or hit_ata == required_ata:
                     eligible_hits.append(h)
                 else:
-                    if hit_ata == required_ata:
-                        eligible_hits.append(h)
-                    else:
-                        ineligible_hits.append(h)
+                    ineligible_hits.append(h)
 
         best_hit = _pick_best_table_hit(eligible_hits, table_hint="102") if eligible_hits else None
 
-        # Location verification
-        location_ok = True
-        location_msgs: List[str] = []
-        coverage_debug: Dict[str, Any] = {}
-
-        if best_hit:
-            excerpt_text = str(best_hit.get("snippet") or best_hit.get("text") or "")
-            coverage = extract_coverage_ranges(excerpt_text)
-            coverage_debug = coverage
-            location_ok, location_msgs = verify_location_vs_coverage(structured, coverage)
-        else:
-            location_ok = False
-            location_msgs = ["• No SRM excerpt selected; cannot verify location."]
-
-        # SRM Reference (top hit)
+        # SRM Reference
         st.markdown("### SRM Reference (top hit)")
         if best_hit:
-            doc = best_hit.get("doc_title") or best_hit.get("title") or best_hit.get("file_name") or "SRM"
+            doc = best_hit.get("doc_title") or best_hit.get("file_name") or "SRM"
             rev = best_hit.get("revision") or "UNKNOWN"
             file_name = best_hit.get("file_name") or ""
-            printed = best_hit.get("printed_page")
-            pdf_page = best_hit.get("pdf_page") or best_hit.get("page")
-            page_str = f"Printed page {printed}" if printed else f"PDF page {pdf_page}"
-            hit_ata = best_hit.get("_inferred_ata")
-            st.write(f"**{doc}** • ATA {hit_ata if hit_ata is not None else 'UNKNOWN'} • {page_str} • File {file_name} (Rev {rev})")
+            pdf_page = best_hit.get("pdf_page")
+            st.write(f"**{doc}** • ATA {best_hit.get('_inferred_ata')} • PDF page {pdf_page} • File {file_name} (Rev {rev})")
             st.code(str(best_hit.get("snippet") or "")[:600], language="text")
         else:
             if required_ata is not None:
                 st.info(f"No SRM PDF/hit available in library for required ATA {required_ata} (based on structure: {structured.get('structure')}).")
             else:
-                st.info("No SRM PDF/hit available in library (required ATA unknown — structure missing).")
+                st.info("No SRM PDF/hit available in library (required ATA unknown).")
+
+        # Final statement gating
+        st.markdown("### Final statement (SRM-based)")
+        if not best_hit:
+            st.write(
+                "Reference: (no SRM hit available in library for required ATA)\n"
+                f"Decision: **NO ASSESSMENT GENERATED** (no SRM reference available for aircraft type {structured.get('aircraft_type') or 'UNKNOWN'}"
+                f"{' under required ATA ' + str(required_ata) if required_ata is not None else ''}.)"
+            )
+        else:
+            dtype = structured.get("damage_type")
+            dia = structured.get("dent_diameter_mm")
+            dep = structured.get("dent_depth_mm")
+            ratio = _compute_wy_ratio(dia, dep)
+
+            doc = best_hit.get("doc_title") or best_hit.get("file_name") or "SRM"
+            ata = best_hit.get("_inferred_ata")
+            pdf_page = best_hit.get("pdf_page")
+            snippet = str(best_hit.get("snippet") or "")
+            mtab = re.search(r"\bTable\s*(\d+)\b", snippet, flags=re.IGNORECASE)
+            table_no = mtab.group(1) if mtab else "102"
+
+            if dtype != "DENT":
+                st.write(f"Reference: **{doc}** • ATA {ata} • Table {table_no} • PDF page {pdf_page}\nDecision: **NO ASSESSMENT GENERATED** (prototype SRM math only implemented for DENT).")
+            else:
+                # Crack gating
+                if structured.get("has_crack") is True:
+                    decision = "OUT OF LIMITS (crack present ⇒ not allowable / engineering review)"
+                elif structured.get("has_crack") is None:
+                    decision = "NO ASSESSMENT GENERATED (crack status unknown; provide crack status)"
+                else:
+                    if dep is None:
+                        decision = "NO ASSESSMENT GENERATED (missing dent depth)"
+                    elif dep > 6.35:
+                        decision = "OUT OF LIMITS (Depth > 6.35 mm (0.25 in))"
+                    elif dep > 3.175:
+                        if ratio is None:
+                            decision = "NO ASSESSMENT GENERATED (cannot compute W/Y ratio)"
+                        elif ratio >= 30.0:
+                            decision = "WITHIN LIMITS (Depth in (3.175..6.35] mm and W/Y ≥ 30)"
+                        else:
+                            decision = "OUT OF LIMITS (Depth in (3.175..6.35] mm and W/Y < 30)"
+                    else:
+                        decision = "WITHIN LIMITS (Depth ≤ 3.175 mm (0.125 in))"
+
+                lines = [
+                    f"Reference: **{doc}** • ATA {ata} • Allowable Damage 1 • Table {table_no} • PDF page {pdf_page}",
+                    f"Decision: **{decision}**",
+                    "",
+                    "Proof / calculations (W=diameter, Y=depth):",
+                    f"- W (diameter): {dia if dia is not None else 'N/A'} mm",
+                    f"- Y (depth): {dep if dep is not None else 'N/A'} mm",
+                    f"- W/Y: {ratio:.2f}" if ratio is not None else "- W/Y: (cannot compute)",
+                ]
+                st.write("\n".join(lines))
 
         # Dent model
+        st.markdown("### Dent model output")
         dent_result: Dict[str, Any] = {"status": "not_run"}
         dent_debug: Dict[str, Any] = {}
 
@@ -855,7 +641,6 @@ with colB:
             try:
                 sig = inspect.signature(DentDamage)  # type: ignore
                 accepted = set(sig.parameters.keys())
-
                 candidates = {
                     "aircraft_type": structured.get("aircraft_type") or "UNKNOWN",
                     "structure_zone": structured.get("structure_zone") or "UNKNOWN",
@@ -867,26 +652,29 @@ with colB:
                     "crack_present": bool(structured.get("has_crack")) if structured.get("has_crack") is not None else False,
                     "notes": structured.get("notes"),
                 }
-
                 filtered = {k: v for k, v in candidates.items() if k in accepted}
-                dent_debug = {
-                    "DentDamage_signature": str(sig),
-                    "accepted_params": list(sig.parameters.keys()),
-                    "filtered_kwargs_used": filtered,
-                }
-
+                dent_debug = {"DentDamage_signature": str(sig), "filtered_kwargs_used": filtered}
                 dent = DentDamage(**filtered)  # type: ignore
                 res = assess_dent(dent)  # type: ignore
                 dent_result = {"result": res} if not isinstance(res, dict) else res
             except Exception as e:
                 dent_result = {"status": "error", "error": f"Could not construct/run DentDamage: {e}"}
         else:
-            if structured.get("damage_type") != "DENT":
-                dent_result = {"status": "skipped", "reason": "damage_type is not DENT"}
-            elif not HAS_DAMAGE_MODELS:
-                dent_result = {"status": "skipped", "reason": "damage_models module not available"}
+            dent_result = {"status": "skipped", "reason": "damage_type is not DENT or damage_models unavailable"}
 
-        # Rules engine (optional)
+        if HAS_DAMAGE_MODELS and "build_plain_text_summary" in globals():
+            try:
+                st.code(build_plain_text_summary(dent_result), language="text")  # type: ignore
+            except Exception:
+                st.json(dent_result)
+        else:
+            st.json(dent_result)
+
+        with st.expander("Dent model debug", expanded=False):
+            st.json(dent_debug)
+
+        # Rules
+        st.markdown("### Rules matches")
         rules_rows: Any = []
         rules_debug: Dict[str, Any] = {"selected": None, "signature": None}
 
@@ -899,10 +687,8 @@ with colB:
                     fn = rules_engine.evaluate_rules  # type: ignore
                 elif hasattr(rules_engine, "run_rules"):
                     fn = rules_engine.run_rules  # type: ignore
-
                 if fn is None:
-                    raise RuntimeError("rules_engine has no compatible rules function (assess_damage/evaluate_rules/run_rules)")
-
+                    raise RuntimeError("rules_engine has no compatible function")
                 rules_debug["selected"] = getattr(fn, "__name__", "unknown")
                 rules_debug["signature"] = str(inspect.signature(fn))
 
@@ -919,9 +705,7 @@ with colB:
                             "stringer": structured.get("stringer"),
                             "frame": structured.get("frame"),
                         },
-                        "measurements": {
-                            "dent": {"diameter_mm": structured.get("dent_diameter_mm"), "depth_mm": structured.get("dent_depth_mm")}
-                        },
+                        "measurements": {"dent": {"diameter_mm": structured.get("dent_diameter_mm"), "depth_mm": structured.get("dent_depth_mm")}},
                         "flags": {"has_crack": structured.get("has_crack")},
                         "_flat": dict(structured),
                     }
@@ -931,172 +715,38 @@ with colB:
                         rules_rows = asdict(rules_rows)
                 else:
                     rules_rows = fn(str(RULES_DB), structured)  # type: ignore
-
             except Exception as e:
                 rules_rows = [{"error": str(e)}]
         else:
-            if not HAS_RULES_ENGINE:
-                rules_rows = [{"status": "skipped", "reason": "rules_engine not available"}]
-            elif not RULES_DB.exists():
-                rules_rows = [{"status": "skipped", "reason": "rules.db not found in deployment"}]
+            rules_rows = [{"status": "skipped", "reason": "rules_engine/rules.db not available"}]
 
-        # Final statement (SRM-based) with gating
-        st.markdown("### Final statement (SRM-based)")
-        dtype = structured.get("damage_type")
-        dia = structured.get("dent_diameter_mm")
-        dep = structured.get("dent_depth_mm")
-        ratio = _compute_wy_ratio(dia, dep)
-
-        can_assess = best_hit is not None and location_ok
-        final_lines: List[str] = []
-
-        if best_hit:
-            doc = best_hit.get("doc_title") or best_hit.get("file_name") or "SRM"
-            rev = best_hit.get("revision") or "UNKNOWN"
-            file_name = best_hit.get("file_name") or ""
-            printed = best_hit.get("printed_page")
-            pdf_page = best_hit.get("pdf_page") or best_hit.get("page")
-            page_str = f"Printed page {printed}" if printed else f"PDF page {pdf_page}"
-
-            snippet = str(best_hit.get("snippet") or "")
-            mtab = re.search(r"\bTable\s*(\d+)\b", snippet, flags=re.IGNORECASE)
-            table_no = mtab.group(1) if mtab else "102"
-
-            hit_ata = best_hit.get("_inferred_ata")
-            final_lines.append(
-                f"Reference: **{doc}** • ATA {hit_ata if hit_ata is not None else 'UNKNOWN'} • "
-                f"**Table {table_no}** • **{page_str}** • File `{file_name}` (Rev {rev})"
-            )
-        else:
-            final_lines.append("Reference: (no SRM hit available in library for required ATA)")
-
-        if not can_assess:
-            reason_bits: List[str] = []
-            if best_hit is None:
-                atype = structured.get("aircraft_type") or "UNKNOWN"
-                if required_ata is not None:
-                    reason_bits.append(f"no SRM reference available for aircraft type {atype} under required ATA {required_ata}.")
-                else:
-                    reason_bits.append(f"no SRM reference available for aircraft type {atype}.")
-            if best_hit is not None and not location_ok:
-                reason_bits.append("SRM excerpt appears not applicable to provided location (STA/Stringer/FR).")
-
-            final_lines.append(f"Decision: **NO ASSESSMENT GENERATED** ({' '.join(reason_bits)})")
-            final_lines.append("")
-            final_lines.append("Location verification vs SRM excerpt:")
-            final_lines.append("Location does NOT appear to be within the SRM excerpt coverage ranges (based on extracted ranges).")
-            final_lines.extend(location_msgs)
-            st.write("\n".join(final_lines))
-        else:
-            if dtype != "DENT":
-                final_lines.append(f"Decision: **NO ASSESSMENT GENERATED** (prototype SRM math only implemented for DENT; got damage_type={dtype}).")
-                st.write("\n".join(final_lines))
-            else:
-                if structured.get("has_crack") is True:
-                    final_lines.append("Decision: **OUT OF LIMITS** (crack present ⇒ not allowable / engineering review).")
-                elif structured.get("has_crack") is None:
-                    final_lines.append("Decision: **NO ASSESSMENT GENERATED** (crack status unknown; provide crack status for SRM-based decision).")
-                else:
-                    if dep is None:
-                        final_lines.append("Decision: **NO ASSESSMENT GENERATED** (missing dent depth).")
-                    else:
-                        if dep > 6.35:
-                            final_lines.append("Decision: **OUT OF LIMITS** (Depth > 6.35 mm (0.25 in) ⇒ not allowable per Table 102 band).")
-                        elif dep > 3.175:
-                            if ratio is None:
-                                final_lines.append("Decision: **NO ASSESSMENT GENERATED** (cannot compute W/Y ratio).")
-                            else:
-                                if ratio >= 30.0:
-                                    final_lines.append("Decision: **WITHIN LIMITS** (Depth in (3.175..6.35] mm and W/Y ≥ 30).")
-                                else:
-                                    final_lines.append("Decision: **OUT OF LIMITS** (Depth in (3.175..6.35] mm and W/Y < 30).")
-                        else:
-                            final_lines.append("Decision: **WITHIN LIMITS** (Depth ≤ 3.175 mm (0.125 in) prototype band).")
-
-                final_lines.append("")
-                final_lines.append("Proof / calculations (W=diameter, Y=depth):")
-                if dia is None or dep is None:
-                    final_lines.append(f"- W (diameter): {dia} mm")
-                    final_lines.append(f"- Y (depth): {dep} mm")
-                    final_lines.append("- W/Y: (cannot compute)")
-                else:
-                    final_lines.append(f"- W (diameter): {dia:.2f} mm")
-                    final_lines.append(f"- Y (depth): {dep:.2f} mm")
-                    final_lines.append(f"- W/Y = {dia:.2f} / {dep:.2f} = **{ratio:.2f}**" if ratio is not None else "- W/Y: (cannot compute)")
-
-                final_lines.append("")
-                final_lines.append("Location verification vs SRM excerpt:")
-                final_lines.append("Location appears to be within the SRM excerpt coverage ranges (based on extracted ranges).")
-                final_lines.extend(location_msgs)
-
-                st.write("\n".join(final_lines))
-
-        # Dent model output
-        st.markdown("### Dent model output")
-        if HAS_DAMAGE_MODELS and "build_plain_text_summary" in globals() and isinstance(dent_result, dict):
-            try:
-                summary = build_plain_text_summary(dent_result)  # type: ignore
-                st.code(summary, language="text")
-            except Exception:
-                st.json(dent_result)
-        else:
-            st.json(dent_result)
-
-        with st.expander("Dent model debug", expanded=False):
-            st.json(dent_debug)
-
-        # Rules matches
-        st.markdown("### Rules matches")
         st.json(rules_rows)
         with st.expander("Rules engine debug", expanded=False):
             st.json(rules_debug)
 
-        # Location verification panel
-        st.markdown("### Location verification vs SRM excerpt")
-        if best_hit:
-            if location_ok:
-                st.success("Location appears to be within the SRM excerpt coverage ranges (based on extracted ranges).")
-            else:
-                st.error("Location does NOT appear to be within the SRM excerpt coverage ranges (based on extracted ranges).")
-            for m in location_msgs:
-                st.write(m)
-        else:
-            st.info("No SRM excerpt selected; location verification not available.")
-
-        with st.expander("Coverage extraction debug", expanded=False):
-            st.json(coverage_debug)
-
-        # SRM hits
+        # SRM hits display
         st.markdown("### SRM search hits (prototype)")
         if eligible_hits:
-            st.caption(f"Required ATA (from structure): {required_ata_str}. Showing only hits matching required ATA.")
+            st.caption(f"Showing hits matching required ATA {required_ata}.")
             for hit in eligible_hits[:8]:
                 title = hit.get("doc_title") or hit.get("file_name") or "SRM hit"
                 rev = hit.get("revision") or "UNKNOWN"
-                atype = hit.get("aircraft_family") or ""
                 file_name = hit.get("file_name") or ""
-                printed = hit.get("printed_page")
-                pdf_page = hit.get("pdf_page") or hit.get("page")
-                hit_ata = hit.get("_inferred_ata")
-
-                page_str = f"Printed page {printed}" if printed else f"PDF page {pdf_page}"
-                meta = f"ATA {hit_ata if hit_ata is not None else 'UNKNOWN'} • Rev: {rev} • Aircraft: {atype} • File: {file_name} • {page_str}"
-                st.markdown(f"**{title}** ({meta})")
-                st.code(str(hit.get("snippet") or hit.get("text") or "")[:1200], language="text")
+                page = hit.get("pdf_page")
+                ata = hit.get("_inferred_ata")
+                st.markdown(f"**{title}** (ATA {ata} • Rev {rev} • File {file_name} • PDF page {page})")
+                st.code(str(hit.get("snippet") or "")[:1200], language="text")
         elif ineligible_hits:
-            st.caption(f"Required ATA (from structure): {required_ata_str}. Found SRM hits, but they are for other ATA chapters (blocked).")
+            st.info("Found SRM hits, but they are for other ATA chapters (blocked).")
             for hit in ineligible_hits[:6]:
-                title = hit.get("doc_title") or hit.get("file_name") or "SRM hit"
-                hit_ata = hit.get("_inferred_ata")
-                st.write(f"- Blocked hit: {title} (ATA {hit_ata if hit_ata is not None else 'UNKNOWN'})")
-            st.info("Add the correct SRM excerpt PDF for the required ATA into your private library, rebuild srm_index.db, and commit only the DB.")
+                st.write(f"- {hit.get('doc_title') or hit.get('file_name')} (ATA {hit.get('_inferred_ata')})")
         else:
             st.json(srm_hits)
 
         with st.expander("SRM search debug", expanded=False):
             st.json(srm_debug)
 
-        # Optional logging
+        # Logging
         st.markdown("### Logging")
         log_it = st.checkbox("Log this assessment to SQLite (assessments.db)", value=True)
         if log_it:
@@ -1110,9 +760,6 @@ with colB:
         st.info("Fill the structured fields if needed, then click **Run rules + SRM search + dent model**.")
 
 
-# -----------------------------
-# Assessment history
-# -----------------------------
 st.divider()
 st.subheader("Assessment history (SQLite)")
 
@@ -1131,7 +778,6 @@ if ASSESSMENTS_DB.exists():
         con.close()
 
         if rows:
-            st.write(f"Showing last {len(rows)} logs from assessments.db")
             st.dataframe(
                 [
                     {

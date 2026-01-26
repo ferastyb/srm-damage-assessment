@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 
 @dataclass
@@ -13,10 +13,10 @@ class SRMHit:
     revision: Optional[str]
     aircraft_family: Optional[str]
     file_name: Optional[str]
-    pdf_page: int
-    printed_page: Optional[int]
+    page: int                   # PDF page index in your DB (page_no)
     snippet: str
     score: float
+    printed_page: Optional[int] = None  # schema-safe: not stored in current DB
 
 
 def _normalize_query(q: str) -> str:
@@ -28,16 +28,15 @@ def _normalize_query(q: str) -> str:
 
 def _tokenize_keywords(q: str) -> List[str]:
     q = _normalize_query(q).lower()
-
     raw = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", q)
 
     stop = {
-        "the","and","or","to","of","in","on","for","with","without",
-        "mm","in","inch","inches","dia","diameter","depth","srm","allowable","damage",
-        "repair","required","within","limit","limits","no","visible"
+        "the", "and", "or", "to", "of", "in", "on", "for", "with", "without",
+        "mm", "in", "inch", "inches", "dia", "diameter", "depth", "srm",
+        "allowable", "damage", "repair", "required", "within", "limit",
+        "limits", "no", "visible",
     }
-    tokens = [t for t in raw if t not in stop and len(t) >= 3]
-    return tokens
+    return [t for t in raw if t not in stop and len(t) >= 3]
 
 
 def _fts_snippet() -> str:
@@ -50,14 +49,18 @@ def _run_fts(
     aircraft_family: Optional[str],
     limit: int,
 ) -> List[SRMHit]:
+    """
+    Schema-safe FTS query:
+    - pages table contains: id, doc_id, page_no, text
+    - NO printed_page column in your current DB
+    """
     sql = f"""
     SELECT
       d.title AS doc_title,
       d.revision AS revision,
       d.aircraft_family AS aircraft_family,
       d.file_name AS file_name,
-      p.page_no AS pdf_page,
-      p.printed_page AS printed_page,
+      p.page_no AS page_no,
       {_fts_snippet()} AS snip,
       bm25(pages_fts) AS rank
     FROM pages_fts
@@ -78,10 +81,10 @@ def _run_fts(
                 revision=r[1],
                 aircraft_family=r[2],
                 file_name=r[3],
-                pdf_page=int(r[4]),
-                printed_page=(int(r[5]) if r[5] is not None else None),
-                snippet=r[6] or "",
-                score=float(r[7]) if r[7] is not None else 0.0,
+                page=int(r[4]),
+                snippet=r[5] or "",
+                score=float(r[6]) if r[6] is not None else 0.0,
+                printed_page=None,
             )
         )
     return hits
@@ -110,9 +113,8 @@ def _run_like_fallback(
       d.revision AS revision,
       d.aircraft_family AS aircraft_family,
       d.file_name AS file_name,
-      p.page_no AS pdf_page,
-      p.printed_page AS printed_page,
-      substr(p.text, 1, 500) AS snip
+      p.page_no AS page_no,
+      substr(p.text, 1, 400) AS snip
     FROM pages p
     JOIN docs d ON d.id = p.doc_id
     WHERE {" AND ".join(clauses)}
@@ -130,10 +132,10 @@ def _run_like_fallback(
                 revision=r[1],
                 aircraft_family=r[2],
                 file_name=r[3],
-                pdf_page=int(r[4]),
-                printed_page=(int(r[5]) if r[5] is not None else None),
-                snippet=(r[6] or "").replace("\n", " "),
+                page=int(r[4]),
+                snippet=(r[5] or "").replace("\n", " "),
                 score=9999.0,
+                printed_page=None,
             )
         )
     return hits
@@ -150,10 +152,10 @@ def search_srm(
     stage1 = [
         '"allowable damage 1"',
         '"fuselage skin"',
-        'applicability',
-        'stringers',
-        'stations',
-        'dent'
+        "applicability",
+        "stringers",
+        "stations",
+        "dent",
     ]
     try:
         hits = _run_fts(conn, " AND ".join(stage1), aircraft_family, limit)
@@ -166,15 +168,15 @@ def search_srm(
     ors = [
         '"allowable damage 1"',
         '"fuselage skin"',
-        'allowable',
-        'fuselage',
-        'skin',
-        'dent',
-        'applicability',
-        'stringers',
-        'stations',
-        'section',
-        'figure'
+        "allowable",
+        "fuselage",
+        "skin",
+        "dent",
+        "applicability",
+        "stringers",
+        "stations",
+        "section",
+        "figure",
     ]
     ors += tokens[:8]
     match_expr = " OR ".join(dict.fromkeys(ors))

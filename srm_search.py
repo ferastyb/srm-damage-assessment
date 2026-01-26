@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 
 @dataclass
@@ -13,10 +13,10 @@ class SRMHit:
     revision: Optional[str]
     aircraft_family: Optional[str]
     file_name: Optional[str]
-    page: int                   # PDF page index in your DB (page_no)
+    page: int
     snippet: str
     score: float
-    printed_page: Optional[int] = None  # schema-safe: not stored in current DB
+    printed_page: Optional[int] = None  # optional; may not exist in DB
 
 
 def _normalize_query(q: str) -> str:
@@ -29,7 +29,6 @@ def _normalize_query(q: str) -> str:
 def _tokenize_keywords(q: str) -> List[str]:
     q = _normalize_query(q).lower()
     raw = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", q)
-
     stop = {
         "the", "and", "or", "to", "of", "in", "on", "for", "with", "without",
         "mm", "in", "inch", "inches", "dia", "diameter", "depth", "srm",
@@ -43,17 +42,21 @@ def _fts_snippet() -> str:
     return "snippet(pages_fts, 0, '[', ']', '…', 16)"
 
 
+def _has_column(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
+    # rows: (cid, name, type, notnull, dflt_value, pk)
+    return any(r[1] == col for r in rows)
+
+
 def _run_fts(
     conn: sqlite3.Connection,
     match_expr: str,
     aircraft_family: Optional[str],
     limit: int,
 ) -> List[SRMHit]:
-    """
-    Schema-safe FTS query:
-    - pages table contains: id, doc_id, page_no, text
-    - NO printed_page column in your current DB
-    """
+    has_printed = _has_column(conn, "pages", "printed_page")
+
+    printed_select = "p.printed_page AS printed_page," if has_printed else "NULL AS printed_page,"
     sql = f"""
     SELECT
       d.title AS doc_title,
@@ -61,6 +64,7 @@ def _run_fts(
       d.aircraft_family AS aircraft_family,
       d.file_name AS file_name,
       p.page_no AS page_no,
+      {printed_select}
       {_fts_snippet()} AS snip,
       bm25(pages_fts) AS rank
     FROM pages_fts
@@ -82,9 +86,9 @@ def _run_fts(
                 aircraft_family=r[2],
                 file_name=r[3],
                 page=int(r[4]),
-                snippet=r[5] or "",
-                score=float(r[6]) if r[6] is not None else 0.0,
-                printed_page=None,
+                printed_page=(int(r[5]) if r[5] is not None else None),
+                snippet=r[6] or "",
+                score=float(r[7]) if r[7] is not None else 0.0,
             )
         )
     return hits
@@ -149,14 +153,7 @@ def search_srm(
 ) -> List[SRMHit]:
     q = _normalize_query(query)
 
-    stage1 = [
-        '"allowable damage 1"',
-        '"fuselage skin"',
-        "applicability",
-        "stringers",
-        "stations",
-        "dent",
-    ]
+    stage1 = ['"allowable damage 1"', '"fuselage skin"', "applicability", "stringers", "stations", "dent"]
     try:
         hits = _run_fts(conn, " AND ".join(stage1), aircraft_family, limit)
         if hits:
@@ -165,19 +162,8 @@ def search_srm(
         pass
 
     tokens = _tokenize_keywords(q)
-    ors = [
-        '"allowable damage 1"',
-        '"fuselage skin"',
-        "allowable",
-        "fuselage",
-        "skin",
-        "dent",
-        "applicability",
-        "stringers",
-        "stations",
-        "section",
-        "figure",
-    ]
+    ors = ['"allowable damage 1"', '"fuselage skin"', "allowable", "fuselage", "skin", "dent",
+           "applicability", "stringers", "stations", "section", "figure"]
     ors += tokens[:8]
     match_expr = " OR ".join(dict.fromkeys(ors))
 

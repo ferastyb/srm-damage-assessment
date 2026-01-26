@@ -1,0 +1,18 @@
+name: Wake Streamlit App
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"   # every 4 hours
+  workflow_dispatch:        # allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping Streamlit app
+        run: |
+          curl -fsSL -A "gh-actions-wake" "https://srm-damage-assessment.streamlit.app/" > /dev/null

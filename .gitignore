@@ -9,3 +9,4 @@ srm_library/
 
 # Local DBs you might not want to commit (optional)
 assessments.db
+__pycache__/

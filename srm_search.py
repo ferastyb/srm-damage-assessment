@@ -56,25 +56,27 @@ def _run_fts(
 ) -> List[SRMHit]:
     has_printed = _has_column(conn, "pages", "printed_page")
 
-    printed_select = "p.printed_page AS printed_page," if has_printed else "NULL AS printed_page,"
-    sql = f"""
-    SELECT
-      d.title AS doc_title,
-      d.revision AS revision,
-      d.aircraft_family AS aircraft_family,
-      d.file_name AS file_name,
-      p.page_no AS page_no,
-      {printed_select}
-      {_fts_snippet()} AS snip,
-      bm25(pages_fts) AS rank
-    FROM pages_fts
-    JOIN pages p ON p.id = pages_fts.rowid
-    JOIN docs d ON d.id = p.doc_id
-    WHERE pages_fts MATCH ?
-      AND (? IS NULL OR d.aircraft_family = ?)
-    ORDER BY rank
-    LIMIT ?
-    """
+    printed_select = "p.printed_page AS printed_page" if has_printed else "NULL AS printed_page"
+
+sql = f"""
+SELECT
+  d.title AS doc_title,
+  d.revision AS revision,
+  d.aircraft_family AS aircraft_family,
+  d.file_name AS file_name,
+  p.page_no AS page_no,
+  {printed_select},
+  {_fts_snippet()} AS snip,
+  bm25(pages_fts) AS rank
+FROM pages_fts
+JOIN pages p ON p.id = pages_fts.rowid
+JOIN docs d ON d.id = p.doc_id
+WHERE pages_fts MATCH ?
+  AND (? IS NULL OR d.aircraft_family = ?)
+ORDER BY rank
+LIMIT ?
+"""
+
     rows = conn.execute(sql, (match_expr, aircraft_family, aircraft_family, limit)).fetchall()
 
     hits: List[SRMHit] = []

@@ -28,7 +28,6 @@ st.caption("Engineering decision support tool for evaluating aircraft structural
 # Safe imports (optional modules)
 # -----------------------------
 HAS_DAMAGE_MODELS = False
-HAS_RULES_ENGINE = False
 HAS_SRM_SEARCH = False
 HAS_REPORT_GENERATOR = False
 
@@ -39,19 +38,13 @@ except Exception:
     pass
 
 try:
-    import rules_engine  # type: ignore
-    HAS_RULES_ENGINE = True
-except Exception:
-    pass
-
-try:
     import srm_search  # type: ignore
     HAS_SRM_SEARCH = True
 except Exception:
     pass
 
 try:
-    from report_generator import write_report_html  # type: ignore
+    from report_generator import write_report_html, write_report_pdf  # type: ignore
     HAS_REPORT_GENERATOR = True
 except Exception:
     pass
@@ -61,10 +54,10 @@ except Exception:
 # Paths
 # -----------------------------
 ROOT = Path(__file__).resolve().parent
-RULES_DB = ROOT / "rules.db"
 SRM_DB = ROOT / "srm_index.db"
 ASSESSMENTS_DB = ROOT / "assessments.db"
 REPORT_HTML = ROOT / "srm_report_preview.html"
+REPORT_PDF = ROOT / "srm_report.pdf"
 
 
 # -----------------------------
@@ -293,7 +286,7 @@ def init_assessments_db(db_path: Path) -> None:
         con.close()
 
 
-def log_assessment(db_path: Path, structured: Dict[str, Any], rules_rows: Any, srm_hits: Any, result: Any) -> None:
+def log_assessment(db_path: Path, structured: Dict[str, Any], srm_hits: Any, result: Any) -> None:
     init_assessments_db(db_path)
     con = sqlite3.connect(str(db_path))
     try:
@@ -302,8 +295,8 @@ def log_assessment(db_path: Path, structured: Dict[str, Any], rules_rows: Any, s
             INSERT INTO assessments (
               created_utc, aircraft_type, structure, structure_zone, side, sta, wl, stringer, frame,
               damage_type, dent_diameter_mm, dent_depth_mm, has_crack,
-              input_text, structured_json, rules_json, srm_hits_json, result_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              input_text, structured_json, srm_hits_json, result_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 utc_now_iso(),
@@ -321,7 +314,6 @@ def log_assessment(db_path: Path, structured: Dict[str, Any], rules_rows: Any, s
                 None if structured.get("has_crack") is None else (1 if structured.get("has_crack") else 0),
                 structured.get("raw"),
                 safe_json(structured),
-                safe_json(rules_rows),
                 safe_json(srm_hits),
                 safe_json(result),
             ),
@@ -513,14 +505,10 @@ with colB:
                 srm_hits = []
 
         eligible_hits: List[Dict[str, Any]] = []
-        ineligible_hits: List[Dict[str, Any]] = []
-
         for h in srm_hits:
             hit_ata = h.get("_inferred_ata")
             if required_ata is None or hit_ata == required_ata:
                 eligible_hits.append(h)
-            else:
-                ineligible_hits.append(h)
 
         best_hit = _pick_best_table_hit(eligible_hits, table_hint="102") if eligible_hits else None
 
@@ -636,69 +624,11 @@ with colB:
         else:
             st.write(dent_result)
 
-        st.markdown("### Rules matches")
-        rules_rows: Any = []
-
-        if HAS_RULES_ENGINE and RULES_DB.exists():
-            try:
-                fn = None
-                if hasattr(rules_engine, "assess_damage"):
-                    fn = rules_engine.assess_damage  # type: ignore
-                elif hasattr(rules_engine, "evaluate_rules"):
-                    fn = rules_engine.evaluate_rules  # type: ignore
-                elif hasattr(rules_engine, "run_rules"):
-                    fn = rules_engine.run_rules  # type: ignore
-
-                if fn is not None:
-                    if getattr(fn, "__name__", "") == "assess_damage":
-                        ctx = {
-                            "aircraft_type": structured.get("aircraft_type"),
-                            "raw": structured.get("raw"),
-                            "damage": {"type": structured.get("damage_type"), "structure": structured.get("structure")},
-                            "location": {
-                                "zone": structured.get("structure_zone"),
-                                "side": structured.get("side"),
-                                "sta": structured.get("sta"),
-                                "wl": structured.get("wl"),
-                                "stringer": structured.get("stringer"),
-                                "frame": structured.get("frame"),
-                            },
-                            "measurements": {"dent": {"diameter_mm": structured.get("dent_diameter_mm"), "depth_mm": structured.get("dent_depth_mm")}},
-                            "flags": {"has_crack": structured.get("has_crack")},
-                            "_flat": dict(structured),
-                        }
-                        rules_rows = fn(str(RULES_DB), structured.get("aircraft_type") or "UNKNOWN", ctx, None)  # type: ignore
-                        if is_dataclass(rules_rows):
-                            rules_rows = asdict(rules_rows)
-                    else:
-                        rules_rows = fn(str(RULES_DB), structured)  # type: ignore
-            except Exception:
-                rules_rows = []
-
-        st.write(rules_rows)
-
-        st.markdown("### SRM Reference Results")
-        if eligible_hits:
-            for hit in eligible_hits[:8]:
-                title = hit.get("doc_title") or hit.get("file_name") or "SRM hit"
-                rev = hit.get("revision") or "UNKNOWN"
-                file_name = hit.get("file_name") or ""
-                printed_page = hit.get("printed_page")
-                pdf_page = hit.get("pdf_page")
-                ata = hit.get("_inferred_ata")
-                page_label = f"Printed page {printed_page}" if printed_page else f"PDF page {pdf_page}"
-                st.markdown(f"**{title}** (ATA {ata} • Rev {rev} • File {file_name} • {page_label})")
-                st.code(str(hit.get("snippet") or "")[:1200], language="text")
-        elif ineligible_hits:
-            st.info("SRM references were found, but they belong to other ATA chapters and are therefore not applicable to this assessment.")
-        else:
-            st.info("No applicable SRM references found.")
-
         st.markdown("### Logging")
         log_it = st.checkbox("Log this assessment to SQLite (assessments.db)", value=True)
         if log_it:
             try:
-                log_assessment(ASSESSMENTS_DB, structured, rules_rows, srm_hits, dent_result)
+                log_assessment(ASSESSMENTS_DB, structured, srm_hits, dent_result)
                 st.success("Assessment logged successfully.")
             except Exception:
                 st.warning("Assessment could not be logged.")
@@ -724,7 +654,9 @@ with rep3:
     rep_ref = st.text_input("RJ REF", value="DBC-E195-E2-20180")
     rep_brand = st.text_input("Brand", value="Royal Jordanian")
 
-if st.button("Generate clean report"):
+rep_btn1, rep_btn2 = st.columns(2)
+
+if rep_btn1.button("Generate HTML report"):
     if not HAS_REPORT_GENERATOR:
         st.error("Report generator module is not available.")
     else:
@@ -741,7 +673,7 @@ if st.button("Generate clean report"):
                 brand_name=rep_brand,
             )
             html_text = Path(out_file).read_text(encoding="utf-8")
-            st.success("Report generated successfully.")
+            st.success("HTML report generated successfully.")
             st.download_button(
                 "Download HTML report",
                 data=html_text,
@@ -750,7 +682,34 @@ if st.button("Generate clean report"):
             )
             components.html(html_text, height=900, scrolling=True)
         except Exception as e:
-            st.error(f"Could not generate report: {e}")
+            st.error(f"Could not generate HTML report: {e}")
+
+if rep_btn2.button("Generate PDF report"):
+    if not HAS_REPORT_GENERATOR:
+        st.error("Report generator module is not available.")
+    else:
+        try:
+            out_file = write_report_pdf(
+                ASSESSMENTS_DB,
+                REPORT_PDF,
+                limit=25,
+                ac_reg=rep_ac_reg,
+                ac_type=rep_ac_type,
+                rev=rep_rev,
+                msn=rep_msn,
+                rj_ref=rep_ref,
+                brand_name=rep_brand,
+            )
+            pdf_bytes = Path(out_file).read_bytes()
+            st.success("PDF report generated successfully.")
+            st.download_button(
+                "Download PDF report",
+                data=pdf_bytes,
+                file_name="srm_report.pdf",
+                mime="application/pdf",
+            )
+        except Exception as e:
+            st.error(f"Could not generate PDF report: {e}")
 
 
 # -----------------------------

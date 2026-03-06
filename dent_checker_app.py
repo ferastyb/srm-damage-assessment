@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import sqlite3
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 # -----------------------------
@@ -28,6 +30,7 @@ st.caption("Engineering decision support tool for evaluating aircraft structural
 HAS_DAMAGE_MODELS = False
 HAS_RULES_ENGINE = False
 HAS_SRM_SEARCH = False
+HAS_REPORT_GENERATOR = False
 
 try:
     from damage_models import DentDamage, assess_dent, build_plain_text_summary  # type: ignore
@@ -47,6 +50,12 @@ try:
 except Exception:
     pass
 
+try:
+    from report_generator import write_report_html  # type: ignore
+    HAS_REPORT_GENERATOR = True
+except Exception:
+    pass
+
 
 # -----------------------------
 # Paths
@@ -55,6 +64,7 @@ ROOT = Path(__file__).resolve().parent
 RULES_DB = ROOT / "rules.db"
 SRM_DB = ROOT / "srm_index.db"
 ASSESSMENTS_DB = ROOT / "assessments.db"
+REPORT_HTML = ROOT / "srm_report_preview.html"
 
 
 # -----------------------------
@@ -208,24 +218,36 @@ def parse_damage_description(desc: str) -> Dict[str, Any]:
     elif re.search(r"\bcrack(s)?\b", raw, flags=re.IGNORECASE):
         out["has_crack"] = True
 
-    dia_mm = _find_float_mm(raw, [
-        r"(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diameter)\b",
-        r"\bdia\s*(\d+(?:\.\d+)?)\s*mm\b",
-        r"dent\s*(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diameter)\b",
-    ])
-    depth_mm = _find_float_mm(raw, [
-        r"(\d+(?:\.\d+)?)\s*mm\s*depth\b",
-        r"\bdepth\s*(\d+(?:\.\d+)?)\s*mm\b",
-    ])
+    dia_mm = _find_float_mm(
+        raw,
+        [
+            r"(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diameter)\b",
+            r"\bdia\s*(\d+(?:\.\d+)?)\s*mm\b",
+            r"dent\s*(\d+(?:\.\d+)?)\s*mm\s*(?:dia|diameter)\b",
+        ],
+    )
+    depth_mm = _find_float_mm(
+        raw,
+        [
+            r"(\d+(?:\.\d+)?)\s*mm\s*depth\b",
+            r"\bdepth\s*(\d+(?:\.\d+)?)\s*mm\b",
+        ],
+    )
 
-    dia_in = _find_float_in(raw, [
-        r"(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\s*(?:dia|diameter)\b",
-        r"\bdia\s*(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\b",
-    ])
-    depth_in = _find_float_in(raw, [
-        r"(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\s*depth\b",
-        r"\bdepth\s*(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\b",
-    ])
+    dia_in = _find_float_in(
+        raw,
+        [
+            r"(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\s*(?:dia|diameter)\b",
+            r"\bdia\s*(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\b",
+        ],
+    )
+    depth_in = _find_float_in(
+        raw,
+        [
+            r"(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\s*depth\b",
+            r"\bdepth\s*(\d+(?:\.\d+)?)\s*(?:in|inch|in\.)\b",
+        ],
+    )
 
     if dia_mm is None and dia_in is not None:
         dia_mm = dia_in * 25.4
@@ -453,7 +475,6 @@ with colB:
         required_ata = required_ata_for_struct(structured.get("structure"))
 
         srm_hits: List[Dict[str, Any]] = []
-
         if HAS_SRM_SEARCH and SRM_DB.exists():
             try:
                 q_bits = []
@@ -490,8 +511,6 @@ with colB:
                 srm_hits = tmp
             except Exception:
                 srm_hits = []
-        else:
-            srm_hits = []
 
         eligible_hits: List[Dict[str, Any]] = []
         ineligible_hits: List[Dict[str, Any]] = []
@@ -512,11 +531,7 @@ with colB:
             file_name = best_hit.get("file_name") or ""
             printed_page = best_hit.get("printed_page")
             pdf_page = best_hit.get("pdf_page")
-
-            if printed_page:
-                page_label = f"Printed page {printed_page}"
-            else:
-                page_label = f"PDF page {pdf_page}"
+            page_label = f"Printed page {printed_page}" if printed_page else f"PDF page {pdf_page}"
 
             st.write(f"**{doc}** • ATA {best_hit.get('_inferred_ata')} • {page_label} • File {file_name} (Rev {rev})")
             st.code(str(best_hit.get("snippet") or "")[:600], language="text")
@@ -692,6 +707,55 @@ with colB:
         st.info("Fill the structured fields if needed, then click **Run assessment**.")
 
 
+# -----------------------------
+# Report generation
+# -----------------------------
+st.divider()
+st.subheader("Generate Formal Report")
+
+rep1, rep2, rep3 = st.columns(3)
+with rep1:
+    rep_ac_reg = st.text_input("A/C REG", value="JY-REG")
+    rep_ac_type = st.text_input("A/C TYPE", value=st.session_state.structured.get("aircraft_type") or "E195-E2")
+with rep2:
+    rep_rev = st.text_input("REV", value="01")
+    rep_msn = st.text_input("A/C MSN", value="20180")
+with rep3:
+    rep_ref = st.text_input("RJ REF", value="DBC-E195-E2-20180")
+    rep_brand = st.text_input("Brand", value="Royal Jordanian")
+
+if st.button("Generate clean report"):
+    if not HAS_REPORT_GENERATOR:
+        st.error("Report generator module is not available.")
+    else:
+        try:
+            out_file = write_report_html(
+                ASSESSMENTS_DB,
+                REPORT_HTML,
+                limit=25,
+                ac_reg=rep_ac_reg,
+                ac_type=rep_ac_type,
+                rev=rep_rev,
+                msn=rep_msn,
+                rj_ref=rep_ref,
+                brand_name=rep_brand,
+            )
+            html_text = Path(out_file).read_text(encoding="utf-8")
+            st.success("Report generated successfully.")
+            st.download_button(
+                "Download HTML report",
+                data=html_text,
+                file_name="srm_report.html",
+                mime="text/html",
+            )
+            components.html(html_text, height=900, scrolling=True)
+        except Exception as e:
+            st.error(f"Could not generate report: {e}")
+
+
+# -----------------------------
+# Assessment history
+# -----------------------------
 st.divider()
 st.subheader("Assessment history")
 
